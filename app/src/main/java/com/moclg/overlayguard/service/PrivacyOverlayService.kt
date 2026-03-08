@@ -3,10 +3,13 @@ package com.moclg.overlayguard.service
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import com.moclg.overlayguard.sensor.RollSensorListener
 
 /**
  * AccessibilityService that draws a black overlay over the status bar region.
@@ -18,6 +21,8 @@ class PrivacyOverlayService : AccessibilityService() {
 
     private var overlayView: View? = null
     private var windowManager: WindowManager? = null
+    private var sensorManager: SensorManager? = null
+    private var rollSensorListener: RollSensorListener? = null
 
     /** Height of the overlay in pixels — adjustable via SharedPreferences. */
     var overlayHeightPx: Int = DEFAULT_OVERLAY_HEIGHT
@@ -32,8 +37,10 @@ class PrivacyOverlayService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         loadPreferences()
         createOverlay()
+        registerSensor()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -45,6 +52,7 @@ class PrivacyOverlayService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        unregisterSensor()
         removeOverlay()
         super.onDestroy()
     }
@@ -102,11 +110,48 @@ class PrivacyOverlayService : AccessibilityService() {
     private fun loadPreferences() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         overlayHeightPx = prefs.getInt(KEY_OVERLAY_HEIGHT, DEFAULT_OVERLAY_HEIGHT)
+        val threshold = prefs.getFloat(KEY_THRESHOLD, RollSensorListener.DEFAULT_THRESHOLD)
+        rollSensorListener?.setThreshold(threshold)
+    }
+
+    // ──────────────────────────────────────────────
+    //  Sensor lifecycle
+    // ──────────────────────────────────────────────
+
+    private fun registerSensor() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val threshold = prefs.getFloat(KEY_THRESHOLD, RollSensorListener.DEFAULT_THRESHOLD)
+
+        val listener = RollSensorListener(threshold) { alpha ->
+            overlayAlpha = alpha
+        }
+        rollSensorListener = listener
+
+        val rotationSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        rotationSensor?.let {
+            sensorManager?.registerListener(
+                listener, it, SensorManager.SENSOR_DELAY_UI
+            )
+        }
+    }
+
+    private fun unregisterSensor() {
+        rollSensorListener?.let { sensorManager?.unregisterListener(it) }
+        rollSensorListener = null
+    }
+
+    /**
+     * Updates the roll-threshold at runtime. Called when the user changes
+     * the sensitivity slider in the dashboard.
+     */
+    fun updateThreshold(degrees: Float) {
+        rollSensorListener?.setThreshold(degrees)
     }
 
     companion object {
         const val PREFS_NAME = "overlay_guard_prefs"
         const val KEY_OVERLAY_HEIGHT = "overlay_height"
+        const val KEY_THRESHOLD = "threshold_degrees"
         const val DEFAULT_OVERLAY_HEIGHT = 150
 
         /** Singleton reference so the UI can communicate with the running service. */
