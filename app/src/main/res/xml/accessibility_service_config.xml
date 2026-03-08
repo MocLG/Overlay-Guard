@@ -3,6 +3,7 @@
     android:description="@string/accessibility_service_description"
     android:accessibilityEventTypes="typeNotificationStateChanged"
     android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="true"
     android:canRetrieveWindowContent="false"
     android:notificationTimeout="50"
     android:settingsActivity="com.moclg.overlayguard.MainActivity" />
