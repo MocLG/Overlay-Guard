@@ -187,18 +187,33 @@ fun DashboardScreen(
                     modifier = Modifier.padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        "Root not detected",
-                        color = Color.Yellow,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "On Android 13+, go to App Info → ⋮ → Allow Restricted Settings " +
-                                "before enabling the accessibility service.",
-                        color = Color.LightGray,
-                        fontSize = 12.sp
-                    )
+                    if (enabled) {
+                        Text(
+                            "Running without root",
+                            color = Color(0xFF4CAF50),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "The service is active. Some features (DND toggle) " +
+                                    "require manual permission grants without root.",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+                    } else {
+                        Text(
+                            "Root not detected",
+                            color = Color.Yellow,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "On Android 13+, go to App Info → ⋮ → Allow Restricted Settings " +
+                                    "before enabling the accessibility service.",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
                         onClick = onOpenAccessibilitySettings,
