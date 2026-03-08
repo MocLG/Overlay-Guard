@@ -1,15 +1,20 @@
 package com.moclg.overlayguard.service
 
 import android.accessibilityservice.AccessibilityService
+import android.app.NotificationManager
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Point
 import android.hardware.Sensor
 import android.hardware.SensorManager
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import com.moclg.overlayguard.sensor.RollSensorListener
+import com.moclg.overlayguard.util.PersistentRootShell
+import com.moclg.overlayguard.util.RootHelper
 
 /**
  * AccessibilityService that draws a black overlay over the status bar region.
@@ -23,28 +28,65 @@ class PrivacyOverlayService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var sensorManager: SensorManager? = null
     private var rollSensorListener: RollSensorListener? = null
+    private var notificationManager: NotificationManager? = null
+
+    /** Persistent root shell — zero-latency command execution. */
+    private val rootShell = PersistentRootShell()
+
+    /** Screen width for computing the swipe midpoint. */
+    private var screenCenterX: Int = 540
 
     /** Height of the overlay in pixels — adjustable via SharedPreferences. */
     var overlayHeightPx: Int = DEFAULT_OVERLAY_HEIGHT
+
+    /** Tracks whether DND is currently engaged. */
+    private var dndActive = false
 
     /** Current alpha of the overlay (0.0 = hidden, 1.0 = visible). */
     var overlayAlpha: Float = 0f
         set(value) {
             field = value
             overlayView?.alpha = value
+
+            // Toggle DND when the black box appears / disappears
+            if (value >= 1f && !dndActive) {
+                dndActive = true
+                enableDnd()
+            } else if (value < 1f && dndActive) {
+                dndActive = false
+                disableDnd()
+            }
         }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
+        // Get screen width for heads-up swipe dismissal
+        val display = windowManager?.defaultDisplay
+        val size = Point()
+        display?.getRealSize(size)
+        screenCenterX = size.x / 2
+
         loadPreferences()
         createOverlay()
         registerSensor()
+
+        // Open persistent root shell so future commands execute instantly
+        if (RootHelper.isRooted()) {
+            Thread {
+                rootShell.open()
+            }.start()
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // No-op: we don't inspect window content
+        if (overlayAlpha < 1f) return
+        if (event?.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            swipeAwayHeadsUp()
+        }
     }
 
     override fun onInterrupt() {
@@ -54,7 +96,89 @@ class PrivacyOverlayService : AccessibilityService() {
     override fun onDestroy() {
         unregisterSensor()
         removeOverlay()
+        // Restore DND
+        if (dndActive) {
+            disableDnd()
+        }
+        // Close the persistent root shell
+        rootShell.close()
         super.onDestroy()
+    }
+
+    // ──────────────────────────────────────────────
+    //  DND management
+    // ──────────────────────────────────────────────
+
+    private fun enableDnd() {
+        // 1. Android API — guaranteed reliable if permission granted
+        try {
+            val nm = notificationManager
+            if (nm != null && nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALARMS)
+                Log.d(TAG, "DND enabled via NotificationManager API")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "NotificationManager DND failed", e)
+        }
+
+        // 2. Root fallback — via persistent shell (instant)
+        if (rootShell.isAlive) {
+            rootShell.exec(
+                "settings put global heads_up_notifications_enabled 0",
+                "settings put system heads_up_notifications_enabled 0",
+                "settings put global zen_mode 2",
+                "cmd notification set_dnd on"
+            )
+        }
+
+        // 3. Swipe away any existing heads-up popup immediately
+        swipeAwayHeadsUp()
+    }
+
+    private fun disableDnd() {
+        try {
+            val nm = notificationManager
+            if (nm != null && nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                Log.d(TAG, "DND disabled via NotificationManager API")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "NotificationManager DND restore failed", e)
+        }
+
+        if (rootShell.isAlive) {
+            rootShell.exec(
+                "settings put global heads_up_notifications_enabled 1",
+                "settings put system heads_up_notifications_enabled 1",
+                "settings put global zen_mode 0",
+                "cmd notification set_dnd off"
+            )
+        }
+    }
+
+    /**
+     * Physically swipe away any visible heads-up notification popup.
+     *
+     * Samsung One UI renders heads-up notifications in a separate HUN window
+     * that sits ABOVE TYPE_ACCESSIBILITY_OVERLAY. collapsePanels() only
+     * collapses the notification shade — it does NOT dismiss heads-up.
+     *
+     * The only reliable way to dismiss a Samsung heads-up is to simulate
+     * the same upward swipe gesture the user would make. `input swipe`
+     * injects at the input dispatcher level and hits whatever window is
+     * at those coordinates, including the HUN window our overlay can't
+     * cover.
+     *
+     * The swipe runs via the persistent root shell (no spawn delay).
+     * Duration = 30ms → near-instant visual dismissal.
+     */
+    private fun swipeAwayHeadsUp() {
+        performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+        if (rootShell.isAlive) {
+            // Swipe upward from head-up area (y=80) to off-screen (y=-100)
+            // at the horizontal center of the display. 30ms duration.
+            rootShell.exec("input swipe $screenCenterX 80 $screenCenterX -100 30")
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -81,6 +205,24 @@ class PrivacyOverlayService : AccessibilityService() {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
+
+            // Cover the display cutout / notch area
+            layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+
+            // PRIVATE_FLAG_IS_SCREEN_DECOR (0x00400000) tells the WM this
+            // window is a screen decoration — nothing (including status-bar
+            // icons and heads-up notifications) will render above it.
+            // Requires a rooted / privileged context to take effect.
+            try {
+                val field = WindowManager.LayoutParams::class.java
+                    .getDeclaredField("privateFlags")
+                field.isAccessible = true
+                val currentFlags = field.getInt(this)
+                field.setInt(this, currentFlags or PRIVATE_FLAG_IS_SCREEN_DECOR)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not set PRIVATE_FLAG_IS_SCREEN_DECOR", e)
+            }
         }
 
         windowManager?.addView(view, params)
@@ -149,6 +291,16 @@ class PrivacyOverlayService : AccessibilityService() {
     }
 
     companion object {
+        private const val TAG = "OverlayGuard"
+
+        /**
+         * PRIVATE_FLAG_IS_SCREEN_DECOR — marks the window as a screen
+         * decoration so the WM renders it above all other layers including
+         * the status bar and notification shade.
+         * Value from AOSP WindowManager.LayoutParams (hidden API).
+         */
+        private const val PRIVATE_FLAG_IS_SCREEN_DECOR = 0x00400000
+
         const val PREFS_NAME = "overlay_guard_prefs"
         const val KEY_OVERLAY_HEIGHT = "overlay_height"
         const val KEY_THRESHOLD = "threshold_degrees"

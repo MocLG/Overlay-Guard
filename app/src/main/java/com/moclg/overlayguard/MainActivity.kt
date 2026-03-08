@@ -1,5 +1,6 @@
 package com.moclg.overlayguard
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -23,6 +24,11 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val rooted = RootHelper.isRooted()
 
+        // Auto-grant DND access via root so the service can toggle it
+        if (rooted) {
+            grantDndAccessViaRoot()
+        }
+
         setContent {
             DashboardScreen(
                 isServiceEnabled = isAccessibilityServiceEnabled(),
@@ -39,7 +45,13 @@ class MainActivity : ComponentActivity() {
                     PrivacyOverlayService.instance?.updateThreshold(degrees)
                 },
                 onOpenAccessibilitySettings = {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    // If DND access not granted, send to that settings page
+                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    if (!nm.isNotificationPolicyAccessGranted) {
+                        startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    } else {
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }
                 }
             )
         }
@@ -61,6 +73,17 @@ class MainActivity : ComponentActivity() {
         } else {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
+    }
+
+    /**
+     * Grant DND / notification policy access via root command.
+     * This allows NotificationManager.setInterruptionFilter() to work
+     * without the user manually granting it.
+     */
+    private fun grantDndAccessViaRoot() {
+        Thread {
+            RootHelper.grantDndAccess("com.moclg.overlayguard")
+        }.start()
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
