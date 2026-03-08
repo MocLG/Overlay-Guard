@@ -1,8 +1,10 @@
 package com.moclg.overlayguard.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.app.NotificationManager
 import android.graphics.Color
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
 import android.hardware.Sensor
@@ -178,7 +180,27 @@ class PrivacyOverlayService : AccessibilityService() {
             // Swipe upward from head-up area (y=80) to off-screen (y=-100)
             // at the horizontal center of the display. 30ms duration.
             rootShell.exec("input swipe $screenCenterX 80 $screenCenterX -100 30")
+        } else {
+            // Rootless fallback: use AccessibilityService.dispatchGesture()
+            // to simulate the same upward swipe. Works without root as long
+            // as the accessibility service is enabled.
+            swipeViaGesture()
         }
+    }
+
+    /**
+     * Dispatch an upward swipe gesture via the AccessibilityService API.
+     * This does not require root — the service itself injects the touch
+     * events at the framework level.
+     */
+    private fun swipeViaGesture() {
+        val path = Path().apply {
+            moveTo(screenCenterX.toFloat(), 80f)
+            lineTo(screenCenterX.toFloat(), 0f)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, 30L)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        dispatchGesture(gesture, null, null)
     }
 
     // ──────────────────────────────────────────────
