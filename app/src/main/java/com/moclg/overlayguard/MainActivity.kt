@@ -71,7 +71,27 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this, "Root command failed", Toast.LENGTH_SHORT).show()
             }
         } else {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            // Without root we can only direct the user to settings.
+            // But if the service is already in the requested state, skip.
+            val alreadyEnabled = isAccessibilityServiceEnabled()
+            if (enable && alreadyEnabled) {
+                // Service is registered — might just be paused
+                val svc = PrivacyOverlayService.instance
+                if (svc != null && svc.paused) {
+                    svc.resume()
+                    Toast.makeText(this, "Service resumed", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Service is already active", Toast.LENGTH_SHORT).show()
+                }
+            } else if (!enable && alreadyEnabled) {
+                // Pause service — keeps accessibility registered
+                PrivacyOverlayService.instance?.pause()
+                Toast.makeText(this, "Service paused", Toast.LENGTH_SHORT).show()
+            } else if (!enable && !alreadyEnabled) {
+                Toast.makeText(this, "Service is already inactive", Toast.LENGTH_SHORT).show()
+            } else {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
         }
     }
 

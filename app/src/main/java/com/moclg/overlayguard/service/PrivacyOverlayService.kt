@@ -44,6 +44,10 @@ class PrivacyOverlayService : AccessibilityService() {
     /** Tracks whether DND is currently engaged. */
     private var dndActive = false
 
+    /** Whether the service is paused (dormant but still registered). */
+    var paused: Boolean = false
+        private set
+
     /** Current alpha of the overlay (0.0 = hidden, 1.0 = visible). */
     var overlayAlpha: Float = 0f
         set(value) {
@@ -85,6 +89,7 @@ class PrivacyOverlayService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (paused) return
         if (overlayAlpha < 1f) return
         if (event?.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
             swipeAwayHeadsUp()
@@ -310,6 +315,29 @@ class PrivacyOverlayService : AccessibilityService() {
      */
     fun updateThreshold(degrees: Float) {
         rollSensorListener?.setThreshold(degrees)
+    }
+
+    /**
+     * Pause the service — stops the sensor and hides the overlay
+     * but keeps the accessibility service registered so the user
+     * doesn't have to re-enable it in settings.
+     */
+    fun pause() {
+        paused = true
+        overlayAlpha = 0f
+        unregisterSensor()
+        removeOverlay()
+        if (dndActive) disableDnd()
+    }
+
+    /**
+     * Resume after a pause — re-creates the overlay and sensor.
+     */
+    fun resume() {
+        paused = false
+        loadPreferences()
+        createOverlay()
+        registerSensor()
     }
 
     companion object {
