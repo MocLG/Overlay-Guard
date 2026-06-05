@@ -17,7 +17,7 @@
 package com.moclg.overlayguard.engine
 
 import android.content.Context
-import android.os.SystemClock
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import com.moclg.overlayguard.core.BlackoutType
@@ -26,6 +26,9 @@ import com.moclg.overlayguard.core.ExecutionResult
 import com.moclg.overlayguard.core.IExecutionHandler
 import com.moclg.overlayguard.core.SettingsNamespace
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class DisplayController(
@@ -35,51 +38,70 @@ class DisplayController(
 ) {
 
     private val resolver = context.contentResolver
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private val displayMutex = Mutex()
     private var state: DisplayState = DisplayState.CLEAR
     private var savedBrightness: SavedBrightness? = null
+    private var blankWakeLock: PowerManager.WakeLock? = null
 
     suspend fun updateBlackoutType(type: BlackoutType) {
-        if (blackoutType == type) return
-        if (state == DisplayState.BLANKED) {
-            restore()
+        displayMutex.withLock {
+            if (blackoutType == type) return
+            if (state == DisplayState.BLANKED) {
+                restoreLocked()
+            }
+            if (state == DisplayState.BLANKED) return
+            blackoutType = type
         }
-        blackoutType = type
     }
 
     suspend fun blank() {
-        if (state == DisplayState.BLANKED) return
-        val result = when (blackoutType) {
-            BlackoutType.ABSOLUTE_DIM -> forceSurfaceBrightnessOff()
-            BlackoutType.TRUE_EXTINGUISH -> executionHandler.setDisplayPowerMode(
-                DisplayPowerMode.OFF
-            )
-        }
-        if (result.success) {
-            state = DisplayState.BLANKED
-            Log.i(TAG, "Display blanked using $blackoutType")
-        } else {
-            Log.w(TAG, "Display blank failed: ${result.message} ${result.output}")
+        displayMutex.withLock {
+            if (state == DisplayState.BLANKED) {
+                refreshBlankWakeLock()
+                return
+            }
+            acquireBlankWakeLock()
+            val result = when (blackoutType) {
+                BlackoutType.ABSOLUTE_DIM -> forceSurfaceBrightnessOff()
+                BlackoutType.TRUE_EXTINGUISH -> forceSurfacePowerOff()
+            }
+            if (result.success) {
+                state = DisplayState.BLANKED
+                Log.i(TAG, "Display blanked using $blackoutType")
+            } else {
+                releaseBlankWakeLock()
+                Log.w(TAG, "Display blank failed: ${result.message} ${result.output}")
+            }
         }
     }
 
     suspend fun restore() {
-        if (state == DisplayState.CLEAR) return
-        val result = when (blackoutType) {
-            BlackoutType.ABSOLUTE_DIM -> restoreBrightness()
-            BlackoutType.TRUE_EXTINGUISH -> executionHandler.setDisplayPowerMode(
-                DisplayPowerMode.NORMAL
-            )
-        }
-        if (result.success) {
-            state = DisplayState.CLEAR
-            Log.i(TAG, "Display restored from $blackoutType")
-        } else {
-            Log.w(TAG, "Display restore failed: ${result.message} ${result.output}")
+        displayMutex.withLock {
+            restoreLocked()
         }
     }
 
     suspend fun close() {
-        restore()
+        displayMutex.withLock {
+            restoreLocked()
+            releaseBlankWakeLock()
+        }
+    }
+
+    private suspend fun restoreLocked() {
+        if (state == DisplayState.CLEAR) return
+        val result = when (blackoutType) {
+            BlackoutType.ABSOLUTE_DIM -> restoreBrightness()
+            BlackoutType.TRUE_EXTINGUISH -> restoreFromSurfacePowerOff()
+        }
+        if (result.success) {
+            state = DisplayState.CLEAR
+            releaseBlankWakeLock()
+            Log.i(TAG, "Display restored from $blackoutType")
+        } else {
+            Log.w(TAG, "Display restore failed: ${result.message} ${result.output}")
+        }
     }
 
     private suspend fun forceAbsoluteDim(): ExecutionResult {
@@ -139,7 +161,7 @@ class DisplayController(
                 Log.w(TAG, "Unable to force manual brightness mode: ${manualModeResult.output}")
             }
 
-            val result = executionHandler.setSurfaceBrightness(SURFACE_BRIGHTNESS_OFF)
+            val result = setSurfaceBrightnessWithRetry(SURFACE_BRIGHTNESS_OFF)
             if (result.success) {
                 result
             } else {
@@ -149,17 +171,66 @@ class DisplayController(
         }
     }
 
+    private suspend fun forceSurfacePowerOff(): ExecutionResult {
+        return withContext(Dispatchers.IO) {
+            savedBrightness = readBrightness()
+            val manualModeResult = executionHandler.executeShellCommand(
+                "settings put system ${Settings.System.SCREEN_BRIGHTNESS_MODE} " +
+                    "${Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL}"
+            )
+            if (!manualModeResult.success) {
+                Log.w(TAG, "Unable to force manual brightness mode: ${manualModeResult.output}")
+            }
+
+            val brightnessResult = setSurfaceBrightnessWithRetry(SURFACE_BRIGHTNESS_OFF)
+            if (!brightnessResult.success) {
+                Log.w(TAG, "Pre-black surface brightness failed: ${brightnessResult.output}")
+            }
+
+            val powerResult = setDisplayPowerModeWithRetry(DisplayPowerMode.OFF)
+            if (powerResult.success) {
+                powerResult
+            } else {
+                Log.w(TAG, "Surface power-off failed; restoring brightness state")
+                restoreBrightness()
+                powerResult
+            }
+        }
+    }
+
+    private suspend fun restoreFromSurfacePowerOff(): ExecutionResult {
+        return withContext(Dispatchers.IO) {
+            val powerResult = setDisplayPowerModeWithRetry(DisplayPowerMode.NORMAL)
+            val brightnessResult = restoreBrightness()
+            if (!brightnessResult.success) {
+                Log.w(TAG, "Brightness restore after power-on failed: ${brightnessResult.output}")
+            }
+            powerResult
+        }
+    }
+
     private suspend fun restoreBrightness(): ExecutionResult {
         return withContext(Dispatchers.IO) {
             val original = savedBrightness
             val mode = original?.mode ?: Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
             val brightness = original?.brightness ?: DEFAULT_RESTORE_BRIGHTNESS
-            val surfaceResult = executionHandler.setSurfaceBrightness(SURFACE_BRIGHTNESS_MIN)
+            val surfaceResult = setSurfaceBrightnessWithRetry(SURFACE_BRIGHTNESS_MIN)
             if (!surfaceResult.success) {
                 Log.w(TAG, "Surface brightness restore nudge failed: ${surfaceResult.output}")
             }
+            val firstBrightness = if (brightness < BRIGHTNESS_NUDGE_DELTA + 1) {
+                brightness + BRIGHTNESS_NUDGE_DELTA
+            } else {
+                brightness - BRIGHTNESS_NUDGE_DELTA
+            }.coerceIn(MIN_SETTINGS_BRIGHTNESS, MAX_SETTINGS_BRIGHTNESS)
 
             if (Settings.System.canWrite(context)) {
+                Settings.System.putInt(
+                    resolver,
+                    Settings.System.SCREEN_BRIGHTNESS,
+                    firstBrightness
+                )
+                delay(BRIGHTNESS_RESTORE_NUDGE_MS)
                 val brightnessOk = Settings.System.putInt(
                     resolver,
                     Settings.System.SCREEN_BRIGHTNESS,
@@ -185,6 +256,13 @@ class DisplayController(
             val floatCommand = original?.brightnessFloat?.let { value ->
                 "settings put system $SCREEN_BRIGHTNESS_FLOAT $value"
             } ?: "settings delete system $SCREEN_BRIGHTNESS_FLOAT"
+            val nudgeResult = executionHandler.executeShellCommand(
+                "settings put system ${Settings.System.SCREEN_BRIGHTNESS} $firstBrightness"
+            )
+            if (!nudgeResult.success) {
+                Log.w(TAG, "Brightness restore nudge setting failed: ${nudgeResult.output}")
+            }
+            delay(BRIGHTNESS_RESTORE_NUDGE_MS)
             val result = executionHandler.executeShellCommand(
                 "settings put system ${Settings.System.SCREEN_BRIGHTNESS} $brightness; " +
                     "settings put system ${Settings.System.SCREEN_BRIGHTNESS_MODE} $mode; " +
@@ -194,6 +272,69 @@ class DisplayController(
                 savedBrightness = null
             }
             result
+        }
+    }
+
+    private suspend fun setSurfaceBrightnessWithRetry(brightness: Float): ExecutionResult {
+        var lastResult = ExecutionResult.failure(
+            "Surface brightness command not attempted"
+        )
+        repeat(SURFACE_COMMAND_ATTEMPTS) { attempt ->
+            if (attempt > 0) {
+                delay(SURFACE_COMMAND_RETRY_DELAY_MS)
+            }
+            val result = executionHandler.setSurfaceBrightness(brightness)
+            if (result.success) {
+                return result
+            }
+            lastResult = result
+        }
+        return lastResult
+    }
+
+    private suspend fun setDisplayPowerModeWithRetry(mode: DisplayPowerMode): ExecutionResult {
+        var lastResult = ExecutionResult.failure(
+            "Display power command not attempted"
+        )
+        repeat(SURFACE_COMMAND_ATTEMPTS) { attempt ->
+            if (attempt > 0) {
+                delay(SURFACE_COMMAND_RETRY_DELAY_MS)
+            }
+            val result = executionHandler.setDisplayPowerMode(mode)
+            if (result.success) {
+                return result
+            }
+            lastResult = result
+        }
+        return lastResult
+    }
+
+    private fun acquireBlankWakeLock() {
+        val lock = blankWakeLock ?: powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            WAKE_LOCK_TAG
+        ).apply {
+            setReferenceCounted(false)
+            blankWakeLock = this
+        }
+        if (!lock.isHeld) {
+            lock.acquire(BLANK_WAKE_LOCK_TIMEOUT_MS)
+        }
+    }
+
+    private fun refreshBlankWakeLock() {
+        val lock = blankWakeLock
+        if (lock == null || !lock.isHeld) {
+            acquireBlankWakeLock()
+        } else {
+            lock.acquire(BLANK_WAKE_LOCK_TIMEOUT_MS)
+        }
+    }
+
+    private fun releaseBlankWakeLock() {
+        val lock = blankWakeLock ?: return
+        if (lock.isHeld) {
+            runCatching { lock.release() }
         }
     }
 
@@ -231,5 +372,13 @@ class DisplayController(
         private const val DEFAULT_RESTORE_BRIGHTNESS = 128
         private const val SURFACE_BRIGHTNESS_OFF = -1.0f
         private const val SURFACE_BRIGHTNESS_MIN = 0.0f
+        private const val SURFACE_COMMAND_ATTEMPTS = 3
+        private const val SURFACE_COMMAND_RETRY_DELAY_MS = 35L
+        private const val BRIGHTNESS_RESTORE_NUDGE_MS = 25L
+        private const val BRIGHTNESS_NUDGE_DELTA = 5
+        private const val MIN_SETTINGS_BRIGHTNESS = 0
+        private const val MAX_SETTINGS_BRIGHTNESS = 255
+        private const val BLANK_WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
+        private const val WAKE_LOCK_TAG = "OverlayGuard:DisplayBlank"
     }
 }

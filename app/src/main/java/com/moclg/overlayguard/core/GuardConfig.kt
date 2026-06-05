@@ -35,9 +35,9 @@ enum class PollingPreset(
     val staticPauseAfterMs: Long,
     val varianceThreshold: Float
 ) {
-    AGGRESSIVE("Aggressive", 250L, 500L, 300_000L, 0.055f),
-    BALANCED("Balanced", 500L, 1_000L, 600_000L, 0.035f),
-    ECO("Eco", 1_000L, 2_000L, 900_000L, 0.020f)
+    AGGRESSIVE("Aggressive", 150L, 300L, 300_000L, 0.055f),
+    BALANCED("Balanced", 350L, 650L, 600_000L, 0.035f),
+    ECO("Eco", 700L, 1_200L, 900_000L, 0.020f)
 }
 
 enum class ThemeMode(val label: String) {
@@ -51,7 +51,7 @@ data class GuardConfig(
     val blackoutType: BlackoutType = BlackoutType.TRUE_EXTINGUISH,
     val pollingPreset: PollingPreset = PollingPreset.BALANCED,
     val motionVarianceThreshold: Float = PollingPreset.BALANCED.varianceThreshold,
-    val attentionYawDegrees: Float = 75f,
+    val attentionYawDegrees: Float = 90f,
     val themeMode: ThemeMode = ThemeMode.SYSTEM
 )
 
@@ -85,7 +85,7 @@ object GuardPreferences {
                 KEY_MOTION_THRESHOLD,
                 preset.varianceThreshold
             ),
-            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 75f),
+            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 90f),
             themeMode = enumValueOrDefault(
                 prefs.getString(KEY_THEME_MODE, null),
                 ThemeMode.SYSTEM

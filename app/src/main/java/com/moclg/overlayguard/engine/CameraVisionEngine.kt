@@ -73,6 +73,7 @@ class CameraVisionEngine(
     private var samplingIntervalMs: Long = config.pollingPreset.dynamicIntervalMs
     private var pausedForStaticDevice = false
     private var lastAnalyzedAtMs = 0L
+    private var lastIntruderDetectedAtMs = 0L
     private var started = false
 
     fun start(owner: LifecycleOwner) {
@@ -146,7 +147,7 @@ class CameraVisionEngine(
 
         @Suppress("DEPRECATION")
         val analysis = ImageAnalysis.Builder()
-            .setTargetResolution(Size(640, 480))
+            .setTargetResolution(Size(960, 720))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { imageAnalysis ->
@@ -231,12 +232,14 @@ class CameraVisionEngine(
             )
         }
         if (faces.size == 1) {
-            return VisionResult(
-                timestampMs = timestampMs,
-                faceCount = 1,
-                attentiveIntruderCount = 0,
-                decision = VisionDecision.CLEAR,
-                reason = "single_face"
+            return applyIntruderHold(
+                VisionResult(
+                    timestampMs = timestampMs,
+                    faceCount = 1,
+                    attentiveIntruderCount = 0,
+                    decision = VisionDecision.CLEAR,
+                    reason = "single_face"
+                )
             )
         }
 
@@ -249,7 +252,7 @@ class CameraVisionEngine(
             isAttentiveSecondaryFace(face, frameWidth, frameHeight)
         }
 
-        return if (attentiveIntruders > 0) {
+        val result = if (attentiveIntruders > 0) {
             VisionResult(
                 timestampMs = timestampMs,
                 faceCount = faces.size,
@@ -266,6 +269,7 @@ class CameraVisionEngine(
                 reason = "secondary_faces_not_attentive"
             )
         }
+        return applyIntruderHold(result)
     }
 
     private fun isAttentiveSecondaryFace(
@@ -283,13 +287,42 @@ class CameraVisionEngine(
             return false
         }
 
-        val yaw = face.headEulerAngleY
-        val yawLimit = config.attentionYawDegrees.coerceIn(MIN_ATTENTION_YAW, MAX_ATTENTION_YAW)
-        if (abs(yaw) > yawLimit) {
+        val configuredYawLimit = config.attentionYawDegrees.coerceIn(
+            MIN_ATTENTION_YAW,
+            MAX_ATTENTION_YAW
+        )
+        val yawLimit = min(
+            configuredYawLimit + SECONDARY_YAW_TOLERANCE_DEGREES,
+            MAX_ATTENTION_YAW
+        )
+        if (yawLimit >= FAIL_SAFE_YAW_BYPASS_DEGREES) {
+            return true
+        }
+
+        if (abs(face.headEulerAngleY) > yawLimit) {
             return false
         }
 
         return true
+    }
+
+    private fun applyIntruderHold(result: VisionResult): VisionResult {
+        if (result.decision == VisionDecision.INTRUDER) {
+            lastIntruderDetectedAtMs = result.timestampMs
+            return result
+        }
+
+        val recentIntruder = lastIntruderDetectedAtMs > 0L &&
+            result.timestampMs - lastIntruderDetectedAtMs <= INTRUDER_HOLD_MS
+        if (result.decision == VisionDecision.CLEAR && recentIntruder) {
+            return result.copy(
+                attentiveIntruderCount = result.attentiveIntruderCount.coerceAtLeast(1),
+                decision = VisionDecision.INTRUDER,
+                reason = "${result.reason}_intruder_hold"
+            )
+        }
+
+        return result
     }
 
     private fun recordAndEmit(result: VisionResult) {
@@ -325,7 +358,7 @@ class CameraVisionEngine(
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
             .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-            .setMinFaceSize(0.04f)
+            .setMinFaceSize(0.025f)
             .enableTracking()
             .build()
     }
@@ -333,8 +366,11 @@ class CameraVisionEngine(
     companion object {
         private const val TAG = "CameraVisionEngine"
         private const val MAX_RECENT_RESULTS = 32
-        private const val MIN_SECONDARY_FACE_AREA_RATIO = 0.004f
+        private const val MIN_SECONDARY_FACE_AREA_RATIO = 0.0015f
         private const val MIN_ATTENTION_YAW = 30f
         private const val MAX_ATTENTION_YAW = 90f
+        private const val SECONDARY_YAW_TOLERANCE_DEGREES = 20f
+        private const val FAIL_SAFE_YAW_BYPASS_DEGREES = 85f
+        private const val INTRUDER_HOLD_MS = 2_500L
     }
 }

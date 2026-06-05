@@ -25,6 +25,7 @@ public final class SurfaceControlCommand {
 
     private static final int POWER_MODE_OFF = 0;
     private static final int POWER_MODE_NORMAL = 2;
+    private static final float UNKNOWN_BRIGHTNESS_NITS = -1.0f;
 
     private SurfaceControlCommand() {
     }
@@ -71,6 +72,7 @@ public final class SurfaceControlCommand {
     }
 
     private static IBinder primaryDisplayToken() throws Exception {
+        IBinder token;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             Class<?> displayControl = loadDisplayControlClass();
             long[] ids = (long[]) displayControl
@@ -79,19 +81,25 @@ public final class SurfaceControlCommand {
             if (ids == null || ids.length == 0) {
                 throw new IllegalStateException("No physical displays");
             }
-            return (IBinder) displayControl
+            token = (IBinder) displayControl
                     .getMethod("getPhysicalDisplayToken", long.class)
                     .invoke(null, ids[0]);
+        } else {
+            Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                token = (IBinder) surfaceControl
+                        .getMethod("getInternalDisplayToken")
+                        .invoke(null);
+            } else {
+                token = (IBinder) surfaceControl
+                        .getMethod("getBuiltInDisplay", int.class)
+                        .invoke(null, 0);
+            }
         }
-        Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            return (IBinder) surfaceControl
-                    .getMethod("getInternalDisplayToken")
-                    .invoke(null);
+        if (token == null) {
+            throw new IllegalStateException("Primary display token is null");
         }
-        return (IBinder) surfaceControl
-                .getMethod("getBuiltInDisplay", int.class)
-                .invoke(null, 0);
+        return token;
     }
 
     private static Class<?> loadDisplayControlClass() throws Exception {
@@ -133,8 +141,58 @@ public final class SurfaceControlCommand {
 
     private static void setDisplayBrightness(IBinder token, float brightness) throws Exception {
         Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
-        surfaceControl
-                .getMethod("setDisplayBrightness", IBinder.class, float.class)
-                .invoke(null, token, brightness);
+        boolean success = invokeDisplayBrightness(surfaceControl, token, brightness);
+        if (!success) {
+            throw new IllegalStateException("SurfaceControl.setDisplayBrightness returned false");
+        }
+    }
+
+    private static boolean invokeDisplayBrightness(
+            Class<?> surfaceControl,
+            IBinder token,
+            float brightness
+    ) throws Exception {
+        Exception firstFailure = null;
+        try {
+            Object result = surfaceControl
+                    .getMethod("setDisplayBrightness", IBinder.class, float.class)
+                    .invoke(null, token, brightness);
+            if (asSuccess(result)) {
+                return true;
+            }
+        } catch (NoSuchMethodException ignored) {
+            // Try the newer overload below.
+        } catch (Exception exception) {
+            firstFailure = exception;
+        }
+
+        try {
+            return asSuccess(surfaceControl
+                .getMethod(
+                        "setDisplayBrightness",
+                        IBinder.class,
+                        float.class,
+                        float.class,
+                        float.class,
+                        float.class
+                )
+                .invoke(
+                        null,
+                        token,
+                        brightness,
+                        UNKNOWN_BRIGHTNESS_NITS,
+                        brightness,
+                        UNKNOWN_BRIGHTNESS_NITS
+                ));
+        } catch (NoSuchMethodException exception) {
+            if (firstFailure != null) {
+                throw firstFailure;
+            }
+            throw exception;
+        }
+    }
+
+    private static boolean asSuccess(Object result) {
+        return !(result instanceof Boolean) || (Boolean) result;
     }
 }
