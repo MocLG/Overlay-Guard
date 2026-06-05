@@ -17,6 +17,7 @@
 package com.moclg.overlayguard.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,8 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,7 +57,32 @@ import com.moclg.overlayguard.core.BlackoutType
 import com.moclg.overlayguard.core.ExecutionMode
 import com.moclg.overlayguard.core.GuardConfig
 import com.moclg.overlayguard.core.PollingPreset
+import com.moclg.overlayguard.core.ThemeMode
 import kotlin.math.roundToInt
+
+private val LightScheme = lightColorScheme(
+    background = Color(0xFFF7F8FA),
+    surface = Color.White,
+    primary = Color(0xFF0B5CAD),
+    secondary = Color(0xFF0E7C66),
+    error = Color(0xFFD1495B),
+    onBackground = Color(0xFF17202A),
+    onSurface = Color(0xFF17202A),
+    onSurfaceVariant = Color(0xFF6F7782),
+    outlineVariant = Color(0xFFE7E9EE)
+)
+
+private val DarkScheme = darkColorScheme(
+    background = Color(0xFF0F1419),
+    surface = Color(0xFF171D23),
+    primary = Color(0xFF74B9FF),
+    secondary = Color(0xFF63D3B2),
+    error = Color(0xFFFF7A8A),
+    onBackground = Color(0xFFE8EDF2),
+    onSurface = Color(0xFFE8EDF2),
+    onSurfaceVariant = Color(0xFFA8B2BD),
+    outlineVariant = Color(0xFF2D3640)
+)
 
 data class PermissionSnapshot(
     val cameraGranted: Boolean,
@@ -81,13 +109,14 @@ fun SettingsDashboard(
     onRequestWriteSettings: () -> Unit,
     onRequestBattery: () -> Unit
 ) {
+    val darkTheme = when (config.themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+
     MaterialTheme(
-        colorScheme = MaterialTheme.colorScheme.copy(
-            background = Color(0xFFF7F8FA),
-            surface = Color.White,
-            primary = Color(0xFF0B5CAD),
-            secondary = Color(0xFF0E7C66)
-        )
+        colorScheme = if (darkTheme) DarkScheme else LightScheme
     ) {
         LazyColumn(
             modifier = Modifier
@@ -108,12 +137,16 @@ fun SettingsDashboard(
                             text = "Overlay Guard",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF17202A)
+                            color = MaterialTheme.colorScheme.onBackground
                         )
                         Text(
                             text = if (serviceRunning) "Monitoring active" else "Monitoring stopped",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (serviceRunning) Color(0xFF0E7C66) else Color(0xFF6F7782)
+                            color = if (serviceRunning) {
+                                MaterialTheme.colorScheme.secondary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
                     Switch(
@@ -133,6 +166,23 @@ fun SettingsDashboard(
                     onRequestWriteSettings = onRequestWriteSettings,
                     onRequestBattery = onRequestBattery
                 )
+            }
+
+            item {
+                SectionCard(title = "Appearance") {
+                    ThemeMode.entries.forEach { mode ->
+                        SelectableRow(
+                            title = mode.label,
+                            subtitle = when (mode) {
+                                ThemeMode.SYSTEM -> "match Android light or dark theme"
+                                ThemeMode.LIGHT -> "always use the light dashboard"
+                                ThemeMode.DARK -> "always use the dark dashboard"
+                            },
+                            selected = config.themeMode == mode,
+                            onClick = { onConfigChange(config.copy(themeMode = mode)) }
+                        )
+                    }
+                }
             }
 
             item {
@@ -222,7 +272,7 @@ fun SettingsDashboard(
                     Text(
                         text = "Dynamic interval ${config.pollingPreset.dynamicIntervalMs} ms · quiet interval ${config.pollingPreset.quietIntervalMs} ms",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6F7782)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -325,7 +375,7 @@ private fun SectionCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(
@@ -336,7 +386,7 @@ private fun SectionCard(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF17202A)
+                color = MaterialTheme.colorScheme.onSurface
             )
             content()
         }
@@ -368,7 +418,7 @@ private fun SelectableRow(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF6F7782)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -396,7 +446,13 @@ private fun PermissionRow(
                     modifier = Modifier
                         .size(10.dp)
                         .clip(CircleShape)
-                        .background(if (granted) Color(0xFF0E7C66) else Color(0xFFD1495B))
+                        .background(
+                            if (granted) {
+                                MaterialTheme.colorScheme.secondary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
                 )
                 Column(modifier = Modifier.padding(start = 10.dp)) {
                     Text(
@@ -407,7 +463,7 @@ private fun PermissionRow(
                     Text(
                         text = detail ?: if (granted) "Ready" else "Required",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6F7782)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -418,6 +474,6 @@ private fun PermissionRow(
                 Text(buttonText)
             }
         }
-        HorizontalDivider(color = Color(0xFFE7E9EE))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }

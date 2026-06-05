@@ -40,12 +40,19 @@ enum class PollingPreset(
     ECO("Eco", 1_500L, 12_000L, 90_000L, 0.020f)
 }
 
+enum class ThemeMode(val label: String) {
+    SYSTEM("Follow system"),
+    LIGHT("Light"),
+    DARK("Dark")
+}
+
 data class GuardConfig(
     val executionMode: ExecutionMode = ExecutionMode.ROOT,
     val blackoutType: BlackoutType = BlackoutType.TRUE_EXTINGUISH,
     val pollingPreset: PollingPreset = PollingPreset.BALANCED,
     val motionVarianceThreshold: Float = PollingPreset.BALANCED.varianceThreshold,
-    val attentionYawDegrees: Float = 45f
+    val attentionYawDegrees: Float = 45f,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM
 )
 
 object GuardPreferences {
@@ -56,6 +63,7 @@ object GuardPreferences {
     const val KEY_POLLING_PRESET = "polling_preset"
     const val KEY_MOTION_THRESHOLD = "motion_threshold"
     const val KEY_ATTENTION_YAW = "attention_yaw_degrees"
+    const val KEY_THEME_MODE = "theme_mode"
 
     fun load(context: Context): GuardConfig {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -77,7 +85,11 @@ object GuardPreferences {
                 KEY_MOTION_THRESHOLD,
                 preset.varianceThreshold
             ),
-            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 45f)
+            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 45f),
+            themeMode = enumValueOrDefault(
+                prefs.getString(KEY_THEME_MODE, null),
+                ThemeMode.SYSTEM
+            )
         )
     }
 
@@ -89,6 +101,7 @@ object GuardPreferences {
             .putString(KEY_POLLING_PRESET, config.pollingPreset.name)
             .putFloat(KEY_MOTION_THRESHOLD, config.motionVarianceThreshold)
             .putFloat(KEY_ATTENTION_YAW, config.attentionYawDegrees)
+            .putString(KEY_THEME_MODE, config.themeMode.name)
             .apply()
     }
 

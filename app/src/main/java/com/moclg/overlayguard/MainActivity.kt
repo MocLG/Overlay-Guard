@@ -236,9 +236,10 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(this, OverlayGuardService::class.java).apply {
             action = OverlayGuardService.ACTION_STOP
         }
-        runCatching {
-            ContextCompat.startForegroundService(this, intent)
-        }.onFailure {
+        if (OverlayGuardService.instance != null) {
+            runCatching { startService(intent) }
+                .onFailure { stopService(Intent(this, OverlayGuardService::class.java)) }
+        } else {
             stopService(Intent(this, OverlayGuardService::class.java))
         }
     }
@@ -275,8 +276,7 @@ class MainActivity : ComponentActivity() {
             shizukuRunning = shizukuRunning,
             shizukuGranted = shizukuGranted
         )
-        serviceRunningState.value = GuardPreferences.isServiceEnabled(this) ||
-            OverlayGuardService.instance != null
+        serviceRunningState.value = GuardPreferences.isServiceEnabled(this)
     }
 
     private fun openShizuku() {
