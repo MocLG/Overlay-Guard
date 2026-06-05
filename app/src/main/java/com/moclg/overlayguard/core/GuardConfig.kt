@@ -35,9 +35,9 @@ enum class PollingPreset(
     val staticPauseAfterMs: Long,
     val varianceThreshold: Float
 ) {
-    AGGRESSIVE("Aggressive", 750L, 4_000L, 45_000L, 0.055f),
-    BALANCED("Balanced", 1_250L, 7_000L, 60_000L, 0.035f),
-    ECO("Eco", 1_500L, 12_000L, 90_000L, 0.020f)
+    AGGRESSIVE("Aggressive", 250L, 500L, 300_000L, 0.055f),
+    BALANCED("Balanced", 500L, 1_000L, 600_000L, 0.035f),
+    ECO("Eco", 1_000L, 2_000L, 900_000L, 0.020f)
 }
 
 enum class ThemeMode(val label: String) {

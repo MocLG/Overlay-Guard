@@ -246,8 +246,8 @@ class OverlayGuardService : LifecycleService() {
 
     private fun createExecutionHandler(mode: ExecutionMode): IExecutionHandler {
         return when (mode) {
-            ExecutionMode.ROOT -> RootHandler(packageName)
-            ExecutionMode.SHIZUKU -> ShizukuHandler(packageName)
+            ExecutionMode.ROOT -> RootHandler(packageName, applicationInfo.sourceDir)
+            ExecutionMode.SHIZUKU -> ShizukuHandler(packageName, applicationInfo.sourceDir)
         }
     }
 

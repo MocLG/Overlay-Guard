@@ -21,6 +21,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import com.moclg.overlayguard.core.BlackoutType
+import com.moclg.overlayguard.core.DisplayPowerMode
 import com.moclg.overlayguard.core.ExecutionResult
 import com.moclg.overlayguard.core.IExecutionHandler
 import com.moclg.overlayguard.core.SettingsNamespace
@@ -48,9 +49,9 @@ class DisplayController(
     suspend fun blank() {
         if (state == DisplayState.BLANKED) return
         val result = when (blackoutType) {
-            BlackoutType.ABSOLUTE_DIM -> forceAbsoluteDim()
-            BlackoutType.TRUE_EXTINGUISH -> executionHandler.goToSleep(
-                SystemClock.uptimeMillis()
+            BlackoutType.ABSOLUTE_DIM -> forceSurfaceBrightnessOff()
+            BlackoutType.TRUE_EXTINGUISH -> executionHandler.setDisplayPowerMode(
+                DisplayPowerMode.OFF
             )
         }
         if (result.success) {
@@ -65,9 +66,8 @@ class DisplayController(
         if (state == DisplayState.CLEAR) return
         val result = when (blackoutType) {
             BlackoutType.ABSOLUTE_DIM -> restoreBrightness()
-            BlackoutType.TRUE_EXTINGUISH -> executionHandler.wakeUp(
-                SystemClock.uptimeMillis(),
-                RESTORE_REASON
+            BlackoutType.TRUE_EXTINGUISH -> executionHandler.setDisplayPowerMode(
+                DisplayPowerMode.NORMAL
             )
         }
         if (result.success) {
@@ -128,11 +128,36 @@ class DisplayController(
         }
     }
 
+    private suspend fun forceSurfaceBrightnessOff(): ExecutionResult {
+        return withContext(Dispatchers.IO) {
+            savedBrightness = readBrightness()
+            val manualModeResult = executionHandler.executeShellCommand(
+                "settings put system ${Settings.System.SCREEN_BRIGHTNESS_MODE} " +
+                    "${Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL}"
+            )
+            if (!manualModeResult.success) {
+                Log.w(TAG, "Unable to force manual brightness mode: ${manualModeResult.output}")
+            }
+
+            val result = executionHandler.setSurfaceBrightness(SURFACE_BRIGHTNESS_OFF)
+            if (result.success) {
+                result
+            } else {
+                Log.w(TAG, "Surface brightness off failed; falling back to settings dim")
+                forceAbsoluteDim()
+            }
+        }
+    }
+
     private suspend fun restoreBrightness(): ExecutionResult {
         return withContext(Dispatchers.IO) {
             val original = savedBrightness
             val mode = original?.mode ?: Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
             val brightness = original?.brightness ?: DEFAULT_RESTORE_BRIGHTNESS
+            val surfaceResult = executionHandler.setSurfaceBrightness(SURFACE_BRIGHTNESS_MIN)
+            if (!surfaceResult.success) {
+                Log.w(TAG, "Surface brightness restore nudge failed: ${surfaceResult.output}")
+            }
 
             if (Settings.System.canWrite(context)) {
                 val brightnessOk = Settings.System.putInt(
@@ -204,6 +229,7 @@ class DisplayController(
         private const val TAG = "DisplayController"
         private const val SCREEN_BRIGHTNESS_FLOAT = "screen_brightness_float"
         private const val DEFAULT_RESTORE_BRIGHTNESS = 128
-        private const val RESTORE_REASON = "OverlayGuard:Restore"
+        private const val SURFACE_BRIGHTNESS_OFF = -1.0f
+        private const val SURFACE_BRIGHTNESS_MIN = 0.0f
     }
 }

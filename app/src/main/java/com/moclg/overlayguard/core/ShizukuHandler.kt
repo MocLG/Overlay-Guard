@@ -30,7 +30,8 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 
 class ShizukuHandler(
-    private val packageName: String
+    private val packageName: String,
+    private val apkPath: String
 ) : IExecutionHandler {
 
     override val mode: ExecutionMode = ExecutionMode.SHIZUKU
@@ -114,6 +115,14 @@ class ShizukuHandler(
         }
     }
 
+    override suspend fun setDisplayPowerMode(mode: DisplayPowerMode): ExecutionResult {
+        return executeSurfaceControlCommand("power", mode.rawValue.toString())
+    }
+
+    override suspend fun setSurfaceBrightness(brightness: Float): ExecutionResult {
+        return executeSurfaceControlCommand("brightness", brightness.toString())
+    }
+
     override fun close() {
         // Shizuku owns the remote binder. Nothing is retained locally.
     }
@@ -192,6 +201,21 @@ class ShizukuHandler(
         return ExecutionResult.failure(
             "Shizuku power binder transactions are only mapped for Android 13 through 15"
         )
+    }
+
+    private suspend fun executeSurfaceControlCommand(
+        operation: String,
+        value: String
+    ): ExecutionResult {
+        return executeShellCommand(
+            "CLASSPATH=${shellQuote(apkPath)} app_process /system/bin " +
+                "com.moclg.overlayguard.core.SurfaceControlCommand " +
+                "${shellQuote(operation)} ${shellQuote(value)}"
+        )
+    }
+
+    private fun shellQuote(value: String): String {
+        return "'" + value.replace("'", "'\\''") + "'"
     }
 
     companion object {

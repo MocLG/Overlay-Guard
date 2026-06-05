@@ -78,6 +78,15 @@ interface IExecutionHandler : Closeable {
     suspend fun goToSleep(uptimeMillis: Long): ExecutionResult
 
     suspend fun wakeUp(uptimeMillis: Long, details: String): ExecutionResult
+
+    suspend fun setDisplayPowerMode(mode: DisplayPowerMode): ExecutionResult
+
+    suspend fun setSurfaceBrightness(brightness: Float): ExecutionResult
+}
+
+enum class DisplayPowerMode(val rawValue: Int) {
+    OFF(0),
+    NORMAL(2)
 }
 
 object PowerBinderConstants {

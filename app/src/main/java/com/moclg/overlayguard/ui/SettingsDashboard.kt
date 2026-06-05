@@ -209,12 +209,12 @@ fun SettingsDashboard(
                     BlackoutType.entries.forEach { type ->
                         SelectableRow(
                             title = when (type) {
-                                BlackoutType.ABSOLUTE_DIM -> "Absolute Brightness Dimming (-1)"
-                                BlackoutType.TRUE_EXTINGUISH -> "Simulated Screen Extinguish"
+                                BlackoutType.ABSOLUTE_DIM -> "Surface Brightness Off (-1)"
+                                BlackoutType.TRUE_EXTINGUISH -> "Surface Power Off"
                             },
                             subtitle = when (type) {
-                                BlackoutType.ABSOLUTE_DIM -> "system brightness forced to panel minimum"
-                                BlackoutType.TRUE_EXTINGUISH -> "IPowerManager goToSleep and wakeUp"
+                                BlackoutType.ABSOLUTE_DIM -> "backlight off while touch/display pipeline stays alive"
+                                BlackoutType.TRUE_EXTINGUISH -> "hardware display power mode off without keyguard sleep"
                             },
                             selected = config.blackoutType == type,
                             onClick = { onConfigChange(config.copy(blackoutType = type)) }

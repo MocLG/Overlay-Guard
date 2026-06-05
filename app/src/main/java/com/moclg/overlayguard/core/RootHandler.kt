@@ -29,7 +29,8 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 
 class RootHandler(
-    private val packageName: String
+    private val packageName: String,
+    private val apkPath: String
 ) : IExecutionHandler {
 
     override val mode: ExecutionMode = ExecutionMode.ROOT
@@ -118,6 +119,14 @@ class RootHandler(
         )
     }
 
+    override suspend fun setDisplayPowerMode(mode: DisplayPowerMode): ExecutionResult {
+        return executeSurfaceControlCommand("power", mode.rawValue.toString())
+    }
+
+    override suspend fun setSurfaceBrightness(brightness: Float): ExecutionResult {
+        return executeSurfaceControlCommand("brightness", brightness.toString())
+    }
+
     override fun close() {
         try {
             stdin?.write("exit\n")
@@ -162,6 +171,17 @@ class RootHandler(
     private fun unsupportedPowerTransactionResult(): ExecutionResult {
         return ExecutionResult.failure(
             "Root power binder transactions are only mapped for Android 13 through 15"
+        )
+    }
+
+    private suspend fun executeSurfaceControlCommand(
+        operation: String,
+        value: String
+    ): ExecutionResult {
+        return executeShellCommand(
+            "CLASSPATH=${shellQuote(apkPath)} app_process /system/bin " +
+                "com.moclg.overlayguard.core.SurfaceControlCommand " +
+                "${shellQuote(operation)} ${shellQuote(value)}"
         )
     }
 
