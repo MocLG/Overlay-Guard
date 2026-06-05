@@ -16,5 +16,8 @@
 -->
 <resources>
     <string name="app_name">Overlay Guard</string>
-    <string name="accessibility_service_description">Overlay Guard uses accessibility to draw a privacy overlay over the status bar when the device is tilted beyond a threshold.</string>
+    <string name="notification_channel_name">Monitoring</string>
+    <string name="notification_channel_description">Foreground camera monitoring for shoulder-surfing protection.</string>
+    <string name="notification_monitoring">Shoulder-surfing fail-safe is running</string>
+    <string name="notification_stop">Stop</string>
 </resources>

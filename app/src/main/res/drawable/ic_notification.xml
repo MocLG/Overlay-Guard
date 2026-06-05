@@ -14,11 +14,12 @@
   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
   GNU General Public License for more details.
 -->
-<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:description="@string/accessibility_service_description"
-    android:accessibilityEventTypes="typeNotificationStateChanged"
-    android:accessibilityFlags="flagDefault"
-    android:canPerformGestures="true"
-    android:canRetrieveWindowContent="false"
-    android:notificationTimeout="50"
-    android:settingsActivity="com.moclg.overlayguard.MainActivity" />
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2L5,5V11C5,15.55 7.91,19.8 12,21.2C16.09,19.8 19,15.55 19,11V5L12,2ZM12,4.18L17,6.32V11C17,14.43 14.95,17.68 12,19.05C9.05,17.68 7,14.43 7,11V6.32L12,4.18ZM10.9,8.2V15.8L15.9,12L10.9,8.2Z" />
+</vector>

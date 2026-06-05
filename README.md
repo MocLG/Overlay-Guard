@@ -1,87 +1,92 @@
 # Overlay Guard
 
-Overlay Guard is a high-performance system utility designed to bring the advanced privacy features of the 2026 Galaxy S26 Ultra to Android 13+ devices. By leveraging real-time sensor fusion and the WindowManager API, this app simulates a "software-defined" hardware privacy screen.
+Overlay Guard is an Android 13+ privacy utility that monitors the front camera
+for shoulder-surfing risk and blanks the display through privileged Root or
+Shizuku execution paths. The legacy accessibility service, tilt trigger, and
+visual overlay implementation have been removed.
 
 ## Project Info
 
 | Key | Value |
 |---|---|
 | Package | `com.moclg.overlayguard` |
-| Target SDK | 35 (Android 15) |
-| Min SDK | 33 (Android 13) |
+| Compile / Target SDK | 34 |
+| Min SDK | 33 |
 | Language | Kotlin |
-| Build System | Gradle 9.3.1 / AGP 8.7.3, Kotlin DSL |
-| UI | Jetpack Compose (Material 3) |
-| Target Device | Rooted Samsung Note 20 Ultra (custom kernel) |
+| UI | Jetpack Compose / Material 3 |
+| Vision | CameraX `ImageAnalysis` + ML Kit Face Detection |
+| Privileged modes | Root `su` or Shizuku |
 
-## Technical Architecture
+## Architecture
 
-### PrivacyOverlayService (AccessibilityService)
-- Uses `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` to draw a black `View` over the status bar.
-- Flags: `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_LAYOUT_IN_SCREEN` — the overlay covers the notch/status bar without intercepting touch events.
-- `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS` to cover display cutouts/notches.
-- Sets `PRIVATE_FLAG_IS_SCREEN_DECOR` via reflection for elevated z-order on supported devices.
-- Overlay height (default 150 px) and roll threshold are stored in `SharedPreferences` and updated at runtime.
-- Supports **pause / resume** — toggling off stops the sensor and overlay without unregistering the accessibility service, so no re-enablement is needed.
+### Execution Modes
 
-### Notification Suppression
-- **DND toggle** — enables Do Not Disturb (ALARMS-only) via `NotificationManager` API when the overlay is active; restores on deactivation.
-- **Root DND fallback** — also sets `heads_up_notifications_enabled`, `zen_mode`, and `cmd notification set_dnd` via root.
-- **Heads-up swipe dismissal** — Samsung One UI renders heads-up notification (HUN) windows above `TYPE_ACCESSIBILITY_OVERLAY`. On `TYPE_NOTIFICATION_STATE_CHANGED` events while the overlay is active:
-  - **With root**: `PersistentRootShell` executes `input swipe` for zero-latency physical dismissal.
-  - **Without root**: `AccessibilityService.dispatchGesture()` simulates the same upward swipe.
-- DND access is auto-granted via root on launch (`cmd notification allow_dnd`).
+The app exposes exactly two execution backends:
 
-### Sensor Fusion (RollSensorListener)
-- Registers `Sensor.TYPE_ROTATION_VECTOR` at `SENSOR_DELAY_UI`.
-- Derives a 3×3 rotation matrix via `SensorManager.getRotationMatrixFromVector`.
-- Extracts orientation angles via `SensorManager.getOrientation`; index **2** = **roll** (radians → degrees).
-- Trigger logic: `|roll| > threshold ⟹ α = 1.0`; otherwise `α = 0.0`.
+- **Root Mode**: opens a persistent `su` shell and uses Android 13-compatible
+  `service call power` binder transactions for `IPowerManager.goToSleep()` and
+  `IPowerManager.wakeUp()`.
+- **Shizuku Mode**: uses the Shizuku SDK, `SystemServiceHelper`, and
+  `ShizukuBinderWrapper` to transact directly with the system power binder.
 
-### Compose Dashboard (MainActivity)
-- **Start / Stop Toggle** — on rooted devices, automatically runs `settings put` commands via `su`; on non-rooted devices:
-  - If service is already enabled, pauses/resumes without opening settings.
-  - Only opens `ACTION_ACCESSIBILITY_SETTINGS` when the service needs initial enablement.
-- **Height Slider** — adjusts overlay height from 50 px to 500 px.
-- **Sensitivity Slider** — adjusts roll threshold from 10° to 45°.
-- **Status card** — shows green "Running without root" when active, or yellow "Root not detected" with setup instructions when inactive.
+Both modes implement `core/IExecutionHandler.kt`, so display power and system
+setting operations are routed through the selected backend.
 
-### Root Automation (RootHelper / PersistentRootShell)
-- Detects root by checking for `su` binary paths (Magisk, KernelSU, legacy).
-- `RootHelper` executes commands via interactive `su` stdin (ProcessBuilder) — more compatible with Magisk/KernelSU than `Runtime.exec(arrayOf("su", "-c", ...))`.
-- `PersistentRootShell` keeps a single `su` process alive for the service lifetime — commands are written to stdin with zero process-spawn overhead.
+### Display Control
 
-## Restricted Settings Bypass (Android 13 / 14)
+`engine/DisplayController.kt` supports two blackout strategies:
 
-Starting with Android 13, sideloaded apps are blocked from enabling accessibility services. To bypass:
+- **Absolute Brightness Dimming**: saves the current brightness state, switches
+  to manual brightness, and forces `screen_brightness` / `screen_brightness_float`
+  to panel minimum values.
+- **Simulated Screen Extinguish**: calls the hidden `IPowerManager.goToSleep()`
+  and restores with `IPowerManager.wakeUp()`.
 
-1. **Go to** Settings → Apps → Overlay Guard → ⋮ (three-dot menu).
-2. **Tap** "Allow Restricted Settings".
-3. **Authenticate** with your PIN / biometric.
-4. **Now navigate** to Settings → Accessibility → Overlay Guard and enable the service.
+### Vision Engine
 
-> On rooted devices this step is unnecessary — the root toggle writes the settings directly.
+`engine/CameraVisionEngine.kt` binds a front-camera CameraX `ImageAnalysis`
+pipeline with `STRATEGY_KEEP_ONLY_LATEST` on a dedicated analyzer executor. ML
+Kit Face Detection counts detected faces and treats the largest face as the
+primary user. Extra faces are evaluated with Euler yaw/pitch plus bounding-box
+projection checks, so side glances beyond the configured yaw limit are ignored.
+
+ML Kit face detection is on-device, but the public ML Kit API does not expose an
+NNAPI/GPU delegate switch for this detector. Overlay Guard keeps inference off
+the main thread and drops stale frames before they reach the model.
+
+### Adaptive Sampling
+
+`engine/SensorPollingManager.kt` listens to `Sensor.TYPE_ACCELEROMETER`, applies
+low-pass filtering, and derives a G-force flux variance window. Dynamic motion
+uses responsive sampling; static periods switch to quiet sampling and eventually
+pause camera analysis until motion resumes.
+
+### Foreground Service
+
+`service/OverlayGuardService.kt` is a lifecycle-aware foreground service using
+camera and special-use service types, `START_STICKY`, memory-pressure trimming,
+and a low-priority persistent notification. `service/OverlayGuardReceiver.kt`
+listens for `BOOT_COMPLETED` and `USER_PRESENT` and restarts monitoring when the
+stored service preference is enabled.
 
 ## Building
 
 ```bash
-# Requires JDK 17 — gradle.properties pins org.gradle.java.home
-./gradlew clean assembleDebug
-# Install on device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleDebug
 ```
-> Or download and install an apk file from release section.
 
-## Git Conventions
-
-All commits must be signed off:
+This repository expects a valid Android SDK and JDK 17. In ARM64 Linux
+containers, AGP's Maven AAPT2 binary may be x86_64-only; use a native AAPT2
+override if needed:
 
 ```bash
-git commit -s -m "type: description"
+ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk \
+./gradlew --no-daemon \
+  -Dorg.gradle.java.home=/opt/jdk17 \
+  -Pandroid.aapt2FromMavenOverride=/usr/lib/android-sdk/build-tools/debian/aapt2 \
+  assembleDebug
 ```
-
-Types: `feat`, `fix`, `docs`, `refactor`, `chore`.
 
 ## License
 
-Proprietary — all rights reserved.
+Licensed under the GNU General Public License v3.0 or later.

@@ -16,117 +16,322 @@
 
 package com.moclg.overlayguard
 
-import android.app.NotificationManager
+import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import com.moclg.overlayguard.sensor.RollSensorListener
-import com.moclg.overlayguard.service.PrivacyOverlayService
-import com.moclg.overlayguard.service.PrivacyOverlayService.Companion.DEFAULT_OVERLAY_HEIGHT
-import com.moclg.overlayguard.service.PrivacyOverlayService.Companion.KEY_OVERLAY_HEIGHT
-import com.moclg.overlayguard.service.PrivacyOverlayService.Companion.KEY_THRESHOLD
-import com.moclg.overlayguard.service.PrivacyOverlayService.Companion.PREFS_NAME
-import com.moclg.overlayguard.ui.DashboardScreen
-import com.moclg.overlayguard.util.RootHelper
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.content.ContextCompat
+import com.moclg.overlayguard.core.ExecutionMode
+import com.moclg.overlayguard.core.GuardConfig
+import com.moclg.overlayguard.core.GuardPreferences
+import com.moclg.overlayguard.core.RootHandler
+import com.moclg.overlayguard.core.ShizukuHandler
+import com.moclg.overlayguard.service.OverlayGuardService
+import com.moclg.overlayguard.ui.PermissionSnapshot
+import com.moclg.overlayguard.ui.SettingsDashboard
+import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
 
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val rooted = RootHelper.isRooted()
+    private val configState = mutableStateOf(GuardConfig())
+    private val permissionsState = mutableStateOf(emptyPermissionSnapshot())
+    private val serviceRunningState = mutableStateOf(false)
+    private var startAfterCameraPermission = false
 
-        // Auto-grant DND access via root so the service can toggle it
-        if (rooted) {
-            grantDndAccessViaRoot()
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && startAfterCameraPermission) {
+            startAfterCameraPermission = false
+            setMonitoringEnabled(true)
+        } else {
+            startAfterCameraPermission = false
+            if (!granted) {
+                GuardPreferences.setServiceEnabled(this, false)
+                serviceRunningState.value = false
+            }
+            refreshState()
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        refreshState()
+    }
+
+    private val shizukuPermissionListener =
+        Shizuku.OnRequestPermissionResultListener { _, _ ->
+            runOnUiThread {
+                refreshState()
+                refreshRunningServiceConfig()
+            }
         }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        runCatching {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+        }
+        refreshState()
+
         setContent {
-            DashboardScreen(
-                isServiceEnabled = isAccessibilityServiceEnabled(),
-                overlayHeight = prefs.getInt(KEY_OVERLAY_HEIGHT, DEFAULT_OVERLAY_HEIGHT),
-                thresholdDegrees = prefs.getFloat(KEY_THRESHOLD, RollSensorListener.DEFAULT_THRESHOLD),
-                isRooted = rooted,
-                onToggleService = { enable -> toggleService(enable, rooted) },
-                onHeightChanged = { height ->
-                    prefs.edit().putInt(KEY_OVERLAY_HEIGHT, height).apply()
-                    PrivacyOverlayService.instance?.updateOverlayHeight(height)
-                },
-                onThresholdChanged = { degrees ->
-                    prefs.edit().putFloat(KEY_THRESHOLD, degrees).apply()
-                    PrivacyOverlayService.instance?.updateThreshold(degrees)
-                },
-                onOpenAccessibilitySettings = {
-                    // If DND access not granted, send to that settings page
-                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                    if (!nm.isNotificationPolicyAccessGranted) {
-                        startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
-                    } else {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }
-                }
+            SettingsDashboard(
+                config = configState.value,
+                permissions = permissionsState.value,
+                serviceRunning = serviceRunningState.value,
+                onServiceToggle = ::setMonitoringEnabled,
+                onConfigChange = ::persistConfig,
+                onRequestCamera = ::requestCameraPermission,
+                onRequestNotifications = ::requestNotificationPermission,
+                onRequestExecution = ::requestExecutionBinding,
+                onRequestWriteSettings = ::requestWriteSettings,
+                onRequestBattery = ::requestBatteryOptimizationExemption
             )
         }
     }
 
-    private fun toggleService(enable: Boolean, rooted: Boolean) {
-        if (rooted) {
-            val success = if (enable) {
-                RootHelper.enableAccessibilityService(
-                    packageName,
-                    "com.moclg.overlayguard.service.PrivacyOverlayService"
-                )
-            } else {
-                RootHelper.disableAccessibilityService()
+    override fun onResume() {
+        super.onResume()
+        refreshState()
+    }
+
+    override fun onDestroy() {
+        runCatching {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+        }
+        super.onDestroy()
+    }
+
+    private fun setMonitoringEnabled(enabled: Boolean) {
+        if (enabled) {
+            if (!hasCameraPermission()) {
+                startAfterCameraPermission = true
+                serviceRunningState.value = false
+                GuardPreferences.setServiceEnabled(this, false)
+                requestCameraPermission()
+                return
             }
-            if (!success) {
-                Toast.makeText(this, "Root command failed", Toast.LENGTH_SHORT).show()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !hasNotificationPermission()
+            ) {
+                requestNotificationPermission()
             }
+            serviceRunningState.value = true
+            GuardPreferences.setServiceEnabled(this, true)
+            startGuardService()
         } else {
-            // Without root we can only direct the user to settings.
-            // But if the service is already in the requested state, skip.
-            val alreadyEnabled = isAccessibilityServiceEnabled()
-            if (enable && alreadyEnabled) {
-                // Service is registered — might just be paused
-                val svc = PrivacyOverlayService.instance
-                if (svc != null && svc.paused) {
-                    svc.resume()
-                    Toast.makeText(this, "Service resumed", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "Service is already active", Toast.LENGTH_SHORT).show()
-                }
-            } else if (!enable && alreadyEnabled) {
-                // Pause service — keeps accessibility registered
-                PrivacyOverlayService.instance?.pause()
-                Toast.makeText(this, "Service paused", Toast.LENGTH_SHORT).show()
-            } else if (!enable && !alreadyEnabled) {
-                Toast.makeText(this, "Service is already inactive", Toast.LENGTH_SHORT).show()
-            } else {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
+            startAfterCameraPermission = false
+            serviceRunningState.value = false
+            GuardPreferences.setServiceEnabled(this, false)
+            stopGuardService()
+        }
+        refreshState()
+    }
+
+    private fun persistConfig(config: GuardConfig) {
+        configState.value = config
+        GuardPreferences.save(this, config)
+        refreshState()
+        refreshRunningServiceConfig()
+    }
+
+    private fun requestCameraPermission() {
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    /**
-     * Grant DND / notification policy access via root command.
-     * This allows NotificationManager.setInterruptionFilter() to work
-     * without the user manually granting it.
-     */
-    private fun grantDndAccessViaRoot() {
-        Thread {
-            RootHelper.grantDndAccess("com.moclg.overlayguard")
-        }.start()
+    private fun requestExecutionBinding() {
+        when (configState.value.executionMode) {
+            ExecutionMode.ROOT -> {
+                val message = if (RootHandler.hasSuBinary()) {
+                    "su binary found. Start monitoring to request root."
+                } else {
+                    "No su binary found on this device."
+                }
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            }
+
+            ExecutionMode.SHIZUKU -> requestShizukuPermission()
+        }
+        refreshState()
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val enabledServices = Settings.Secure.getString(
-            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
-        val component = "$packageName/com.moclg.overlayguard.service.PrivacyOverlayService"
-        return enabledServices.contains(component)
+    private fun requestShizukuPermission() {
+        try {
+            if (!Shizuku.pingBinder()) {
+                Toast.makeText(this, "Shizuku is not running.", Toast.LENGTH_SHORT).show()
+                openShizuku()
+                return
+            }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Shizuku permission already granted.", Toast.LENGTH_SHORT)
+                    .show()
+                return
+            }
+            if (Shizuku.shouldShowRequestPermissionRationale()) {
+                Toast.makeText(this, "Shizuku permission was denied.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            Shizuku.requestPermission(REQUEST_SHIZUKU_PERMISSION)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Unable to request Shizuku permission.", Toast.LENGTH_SHORT)
+                .show()
+        }
+    }
+
+    private fun requestWriteSettings() {
+        val uri = Uri.parse("package:$packageName")
+        val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, uri)
+        startActivity(intent)
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (isBatteryUnrestricted()) {
+            refreshState()
+            return
+        }
+        val uri = Uri.parse("package:$packageName")
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, uri)
+        runCatching { startActivity(intent) }
+            .onFailure {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+    }
+
+    private fun startGuardService() {
+        val intent = Intent(this, OverlayGuardService::class.java).apply {
+            action = OverlayGuardService.ACTION_START
+        }
+        runCatching {
+            ContextCompat.startForegroundService(this, intent)
+        }.onFailure { error ->
+            GuardPreferences.setServiceEnabled(this, false)
+            serviceRunningState.value = false
+            Toast.makeText(
+                this,
+                "Unable to start monitoring: ${error.javaClass.simpleName}",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    private fun stopGuardService() {
+        val intent = Intent(this, OverlayGuardService::class.java).apply {
+            action = OverlayGuardService.ACTION_STOP
+        }
+        runCatching {
+            ContextCompat.startForegroundService(this, intent)
+        }.onFailure {
+            stopService(Intent(this, OverlayGuardService::class.java))
+        }
+    }
+
+    private fun refreshRunningServiceConfig() {
+        if (!GuardPreferences.isServiceEnabled(this)) return
+        val intent = Intent(this, OverlayGuardService::class.java).apply {
+            action = OverlayGuardService.ACTION_REFRESH_CONFIG
+        }
+        runCatching {
+            ContextCompat.startForegroundService(this, intent)
+        }
+    }
+
+    private fun refreshState() {
+        val config = GuardPreferences.load(this)
+        configState.value = config
+
+        val rootAvailable = RootHandler.hasSuBinary()
+        val shizukuRunning = ShizukuHandler.isBinderReady()
+        val shizukuGranted = ShizukuHandler.hasPermission()
+        val executionReady = when (config.executionMode) {
+            ExecutionMode.ROOT -> rootAvailable
+            ExecutionMode.SHIZUKU -> shizukuRunning && shizukuGranted
+        }
+
+        permissionsState.value = PermissionSnapshot(
+            cameraGranted = hasCameraPermission(),
+            notificationsGranted = hasNotificationPermission(),
+            executionReady = executionReady,
+            writeSettingsGranted = Settings.System.canWrite(this),
+            batteryUnrestricted = isBatteryUnrestricted(),
+            rootAvailable = rootAvailable,
+            shizukuRunning = shizukuRunning,
+            shizukuGranted = shizukuGranted
+        )
+        serviceRunningState.value = GuardPreferences.isServiceEnabled(this) ||
+            OverlayGuardService.instance != null
+    }
+
+    private fun openShizuku() {
+        val intent = packageManager.getLaunchIntentForPackage(SHIZUKU_PACKAGE)
+        try {
+            if (intent != null) {
+                startActivity(intent)
+            } else {
+                startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://shizuku.rikka.app/download/")
+                    )
+                )
+            }
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "Install and start Shizuku first.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun hasCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun isBatteryUnrestricted(): Boolean {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    companion object {
+        private const val REQUEST_SHIZUKU_PERMISSION = 40_013
+        private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+
+        private fun emptyPermissionSnapshot(): PermissionSnapshot {
+            return PermissionSnapshot(
+                cameraGranted = false,
+                notificationsGranted = false,
+                executionReady = false,
+                writeSettingsGranted = false,
+                batteryUnrestricted = false,
+                rootAvailable = false,
+                shizukuRunning = false,
+                shizukuGranted = false
+            )
+        }
     }
 }
