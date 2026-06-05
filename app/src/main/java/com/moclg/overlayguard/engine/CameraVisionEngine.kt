@@ -70,7 +70,7 @@ class CameraVisionEngine(
     private var cameraProvider: ProcessCameraProvider? = null
     private var lifecycleOwner: LifecycleOwner? = null
     private var imageAnalysis: ImageAnalysis? = null
-    private var samplingIntervalMs: Long = config.pollingPreset.dynamicIntervalMs
+    private var samplingIntervalMs: Long = config.dynamicIntervalMs
     private var pausedForStaticDevice = false
     private var lastAnalyzedAtMs = 0L
     private var lastIntruderDetectedAtMs = 0L
@@ -113,7 +113,7 @@ class CameraVisionEngine(
         config = newConfig
         samplingIntervalMs = min(
             samplingIntervalMs,
-            newConfig.pollingPreset.dynamicIntervalMs
+            newConfig.dynamicIntervalMs
         )
     }
 

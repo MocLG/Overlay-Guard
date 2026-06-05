@@ -225,52 +225,82 @@ fun SettingsDashboard(
 
             item {
                 SectionCard(title = "Smart Polling") {
+                    Text(
+                        text = "Profile",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        PollingPreset.entries.forEach { preset ->
+                        PollingPresetUiOrder.forEach { preset ->
                             FilterChip(
                                 selected = config.pollingPreset == preset,
                                 onClick = {
                                     onConfigChange(
-                                        config.copy(
-                                            pollingPreset = preset,
-                                            motionVarianceThreshold = preset.varianceThreshold
-                                        )
+                                        config.withPollingPreset(preset)
                                     )
                                 },
                                 label = { Text(preset.label) }
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Motion variance",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "%.3f".format(config.motionVarianceThreshold),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Slider(
-                        value = config.motionVarianceThreshold,
-                        onValueChange = {
-                            onConfigChange(config.copy(motionVarianceThreshold = it))
+                    PollingSlider(
+                        title = "Motion response",
+                        valueText = "${motionResponsePercent(config.motionVarianceThreshold).roundToInt()}%",
+                        value = motionResponsePercent(config.motionVarianceThreshold),
+                        onValueChange = { response ->
+                            onConfigChange(
+                                config.withCustomMotionThreshold(
+                                    thresholdFromMotionResponse(response)
+                                )
+                            )
                         },
-                        valueRange = 0.010f..0.080f,
-                        steps = 13
+                        valueRange = 0f..100f,
+                        steps = 19,
+                        startLabel = "Battery saver",
+                        endLabel = "Responsive"
+                    )
+                    PollingSlider(
+                        title = "Active check interval",
+                        valueText = intervalLabel(config.dynamicIntervalMs),
+                        value = config.dynamicIntervalMs.toFloat(),
+                        onValueChange = { interval ->
+                            onConfigChange(
+                                config.withCustomDynamicInterval(
+                                    interval.roundToInt()
+                                        .toLong()
+                                        .coerceIn(ACTIVE_INTERVAL_MIN_MS, ACTIVE_INTERVAL_MAX_MS)
+                                )
+                            )
+                        },
+                        valueRange = ACTIVE_INTERVAL_MIN_MS.toFloat()..ACTIVE_INTERVAL_MAX_MS.toFloat(),
+                        steps = 26,
+                        startLabel = "Faster",
+                        endLabel = "Lower battery"
+                    )
+                    PollingSlider(
+                        title = "Quiet check interval",
+                        valueText = intervalLabel(config.quietIntervalMs),
+                        value = config.quietIntervalMs.toFloat(),
+                        onValueChange = { interval ->
+                            onConfigChange(
+                                config.withCustomQuietInterval(
+                                    interval.roundToInt()
+                                        .toLong()
+                                        .coerceIn(QUIET_INTERVAL_MIN_MS, QUIET_INTERVAL_MAX_MS)
+                                )
+                            )
+                        },
+                        valueRange = QUIET_INTERVAL_MIN_MS.toFloat()..QUIET_INTERVAL_MAX_MS.toFloat(),
+                        steps = 21,
+                        startLabel = "Faster",
+                        endLabel = "Lower battery"
                     )
                     Text(
-                        text = "Dynamic interval ${config.pollingPreset.dynamicIntervalMs} ms · quiet interval ${config.pollingPreset.quietIntervalMs} ms",
+                        text = "Desk pause ${pauseLabel(config.staticPauseAfterMs)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -279,28 +309,22 @@ fun SettingsDashboard(
 
             item {
                 SectionCard(title = "Face Attention Gate") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Yaw limit",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "${config.attentionYawDegrees.roundToInt()} deg",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Slider(
+                    val failSafeAngle = config.attentionYawDegrees >= FAIL_SAFE_ATTENTION_DEGREES
+                    PollingSlider(
+                        title = "Secondary face angle",
+                        valueText = if (failSafeAngle) {
+                            "Any second face"
+                        } else {
+                            "${config.attentionYawDegrees.roundToInt()} deg"
+                        },
                         value = config.attentionYawDegrees,
                         onValueChange = {
                             onConfigChange(config.copy(attentionYawDegrees = it))
                         },
                         valueRange = 30f..90f,
-                        steps = 11
+                        steps = 11,
+                        startLabel = "Strict",
+                        endLabel = "Fail-safe"
                     )
                 }
             }
@@ -311,6 +335,101 @@ fun SettingsDashboard(
         }
     }
 }
+
+@Composable
+private fun PollingSlider(
+    title: String,
+    valueText: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    startLabel: String,
+    endLabel: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Slider(
+            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = startLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = endLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private val PollingPresetUiOrder = listOf(
+    PollingPreset.BALANCED,
+    PollingPreset.ECO,
+    PollingPreset.AGGRESSIVE,
+    PollingPreset.CUSTOM
+)
+
+private fun motionResponsePercent(threshold: Float): Float {
+    val bounded = threshold.coerceIn(MOTION_THRESHOLD_MIN, MOTION_THRESHOLD_MAX)
+    return ((MOTION_THRESHOLD_MAX - bounded) / (MOTION_THRESHOLD_MAX - MOTION_THRESHOLD_MIN)) *
+        100f
+}
+
+private fun thresholdFromMotionResponse(responsePercent: Float): Float {
+    val bounded = responsePercent.coerceIn(0f, 100f)
+    return MOTION_THRESHOLD_MAX -
+        (bounded / 100f) * (MOTION_THRESHOLD_MAX - MOTION_THRESHOLD_MIN)
+}
+
+private fun intervalLabel(intervalMs: Long): String {
+    return if (intervalMs < 1_000L) {
+        "${intervalMs} ms"
+    } else {
+        "%.2f s".format(intervalMs / 1_000f)
+    }
+}
+
+private fun pauseLabel(pauseMs: Long): String {
+    val minutes = pauseMs / 60_000L
+    return if (minutes <= 1L) {
+        "1 min"
+    } else {
+        "$minutes min"
+    }
+}
+
+private const val MOTION_THRESHOLD_MIN = 0.010f
+private const val MOTION_THRESHOLD_MAX = 0.080f
+private const val ACTIVE_INTERVAL_MIN_MS = 150L
+private const val ACTIVE_INTERVAL_MAX_MS = 1_500L
+private const val QUIET_INTERVAL_MIN_MS = 300L
+private const val QUIET_INTERVAL_MAX_MS = 2_500L
+private const val FAIL_SAFE_ATTENTION_DEGREES = 85f
 
 @Composable
 private fun PermissionCard(

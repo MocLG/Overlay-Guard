@@ -64,7 +64,7 @@ class SensorPollingManager(
             dispatch(
                 SamplingDirective(
                     motionState = MotionState.DYNAMIC,
-                    intervalMs = config.pollingPreset.dynamicIntervalMs,
+                    intervalMs = config.dynamicIntervalMs,
                     pauseCamera = false,
                     variance = Float.MAX_VALUE
                 )
@@ -152,14 +152,14 @@ class SensorPollingManager(
         val directive = if (isStatic) {
             SamplingDirective(
                 motionState = MotionState.STATIC,
-                intervalMs = config.pollingPreset.quietIntervalMs,
-                pauseCamera = staticDuration >= config.pollingPreset.staticPauseAfterMs,
+                intervalMs = config.quietIntervalMs,
+                pauseCamera = staticDuration >= config.staticPauseAfterMs,
                 variance = variance
             )
         } else {
             SamplingDirective(
                 motionState = MotionState.DYNAMIC,
-                intervalMs = config.pollingPreset.dynamicIntervalMs,
+                intervalMs = config.dynamicIntervalMs,
                 pauseCamera = false,
                 variance = variance
             )

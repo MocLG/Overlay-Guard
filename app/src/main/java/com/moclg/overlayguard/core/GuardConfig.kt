@@ -35,9 +35,10 @@ enum class PollingPreset(
     val staticPauseAfterMs: Long,
     val varianceThreshold: Float
 ) {
-    AGGRESSIVE("Aggressive", 150L, 300L, 300_000L, 0.055f),
+    AGGRESSIVE("Aggressive", 150L, 300L, 300_000L, 0.020f),
     BALANCED("Balanced", 350L, 650L, 600_000L, 0.035f),
-    ECO("Eco", 700L, 1_200L, 900_000L, 0.020f)
+    ECO("Eco", 700L, 1_200L, 900_000L, 0.055f),
+    CUSTOM("Custom", 350L, 650L, 600_000L, 0.035f)
 }
 
 enum class ThemeMode(val label: String) {
@@ -51,9 +52,46 @@ data class GuardConfig(
     val blackoutType: BlackoutType = BlackoutType.TRUE_EXTINGUISH,
     val pollingPreset: PollingPreset = PollingPreset.BALANCED,
     val motionVarianceThreshold: Float = PollingPreset.BALANCED.varianceThreshold,
+    val dynamicIntervalMs: Long = PollingPreset.BALANCED.dynamicIntervalMs,
+    val quietIntervalMs: Long = PollingPreset.BALANCED.quietIntervalMs,
+    val staticPauseAfterMs: Long = PollingPreset.BALANCED.staticPauseAfterMs,
     val attentionYawDegrees: Float = 90f,
     val themeMode: ThemeMode = ThemeMode.SYSTEM
-)
+) {
+    fun withPollingPreset(preset: PollingPreset): GuardConfig {
+        if (preset == PollingPreset.CUSTOM) {
+            return copy(pollingPreset = PollingPreset.CUSTOM)
+        }
+        return copy(
+            pollingPreset = preset,
+            motionVarianceThreshold = preset.varianceThreshold,
+            dynamicIntervalMs = preset.dynamicIntervalMs,
+            quietIntervalMs = preset.quietIntervalMs,
+            staticPauseAfterMs = preset.staticPauseAfterMs
+        )
+    }
+
+    fun withCustomMotionThreshold(threshold: Float): GuardConfig {
+        return copy(
+            pollingPreset = PollingPreset.CUSTOM,
+            motionVarianceThreshold = threshold
+        )
+    }
+
+    fun withCustomDynamicInterval(intervalMs: Long): GuardConfig {
+        return copy(
+            pollingPreset = PollingPreset.CUSTOM,
+            dynamicIntervalMs = intervalMs
+        )
+    }
+
+    fun withCustomQuietInterval(intervalMs: Long): GuardConfig {
+        return copy(
+            pollingPreset = PollingPreset.CUSTOM,
+            quietIntervalMs = intervalMs
+        )
+    }
+}
 
 object GuardPreferences {
     const val PREFS_NAME = "overlay_guard_prefs"
@@ -62,6 +100,9 @@ object GuardPreferences {
     const val KEY_BLACKOUT_TYPE = "blackout_type"
     const val KEY_POLLING_PRESET = "polling_preset"
     const val KEY_MOTION_THRESHOLD = "motion_threshold"
+    const val KEY_DYNAMIC_INTERVAL_MS = "dynamic_interval_ms"
+    const val KEY_QUIET_INTERVAL_MS = "quiet_interval_ms"
+    const val KEY_STATIC_PAUSE_AFTER_MS = "static_pause_after_ms"
     const val KEY_ATTENTION_YAW = "attention_yaw_degrees"
     const val KEY_THEME_MODE = "theme_mode"
 
@@ -85,6 +126,18 @@ object GuardPreferences {
                 KEY_MOTION_THRESHOLD,
                 preset.varianceThreshold
             ),
+            dynamicIntervalMs = prefs.getLong(
+                KEY_DYNAMIC_INTERVAL_MS,
+                preset.dynamicIntervalMs
+            ),
+            quietIntervalMs = prefs.getLong(
+                KEY_QUIET_INTERVAL_MS,
+                preset.quietIntervalMs
+            ),
+            staticPauseAfterMs = prefs.getLong(
+                KEY_STATIC_PAUSE_AFTER_MS,
+                preset.staticPauseAfterMs
+            ),
             attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 90f),
             themeMode = enumValueOrDefault(
                 prefs.getString(KEY_THEME_MODE, null),
@@ -100,6 +153,9 @@ object GuardPreferences {
             .putString(KEY_BLACKOUT_TYPE, config.blackoutType.name)
             .putString(KEY_POLLING_PRESET, config.pollingPreset.name)
             .putFloat(KEY_MOTION_THRESHOLD, config.motionVarianceThreshold)
+            .putLong(KEY_DYNAMIC_INTERVAL_MS, config.dynamicIntervalMs)
+            .putLong(KEY_QUIET_INTERVAL_MS, config.quietIntervalMs)
+            .putLong(KEY_STATIC_PAUSE_AFTER_MS, config.staticPauseAfterMs)
             .putFloat(KEY_ATTENTION_YAW, config.attentionYawDegrees)
             .putString(KEY_THEME_MODE, config.themeMode.name)
             .apply()
