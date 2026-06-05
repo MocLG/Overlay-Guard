@@ -51,7 +51,7 @@ data class GuardConfig(
     val blackoutType: BlackoutType = BlackoutType.TRUE_EXTINGUISH,
     val pollingPreset: PollingPreset = PollingPreset.BALANCED,
     val motionVarianceThreshold: Float = PollingPreset.BALANCED.varianceThreshold,
-    val attentionYawDegrees: Float = 45f,
+    val attentionYawDegrees: Float = 75f,
     val themeMode: ThemeMode = ThemeMode.SYSTEM
 )
 
@@ -85,7 +85,7 @@ object GuardPreferences {
                 KEY_MOTION_THRESHOLD,
                 preset.varianceThreshold
             ),
-            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 45f),
+            attentionYawDegrees = prefs.getFloat(KEY_ATTENTION_YAW, 75f),
             themeMode = enumValueOrDefault(
                 prefs.getString(KEY_THEME_MODE, null),
                 ThemeMode.SYSTEM

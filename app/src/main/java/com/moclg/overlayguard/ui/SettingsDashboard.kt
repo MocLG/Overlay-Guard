@@ -299,8 +299,8 @@ fun SettingsDashboard(
                         onValueChange = {
                             onConfigChange(config.copy(attentionYawDegrees = it))
                         },
-                        valueRange = 30f..60f,
-                        steps = 5
+                        valueRange = 30f..90f,
+                        steps = 11
                     )
                 }
             }

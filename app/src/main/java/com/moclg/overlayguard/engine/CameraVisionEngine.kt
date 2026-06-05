@@ -36,10 +36,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.tan
 
 data class VisionResult(
     val timestampMs: Long,
@@ -287,26 +284,12 @@ class CameraVisionEngine(
         }
 
         val yaw = face.headEulerAngleY
-        val pitch = face.headEulerAngleX
-        if (abs(yaw) > config.attentionYawDegrees) {
+        val yawLimit = config.attentionYawDegrees.coerceIn(MIN_ATTENTION_YAW, MAX_ATTENTION_YAW)
+        if (abs(yaw) > yawLimit) {
             return false
         }
 
-        val yawRad = Math.toRadians(yaw.toDouble())
-        val pitchRad = Math.toRadians(pitch.toDouble())
-        val displayNormalAlignment = cos(yawRad) * cos(pitchRad)
-        if (displayNormalAlignment < ATTENTION_CONE_COSINE) {
-            return false
-        }
-
-        val centerX = box.exactCenterX() / width
-        val centerY = box.exactCenterY() / height
-        val faceScale = max(boxWidth / width, boxHeight / height)
-        val projectedX = centerX - tan(yawRad).toFloat() * faceScale
-        val projectedY = centerY + tan(pitchRad).toFloat() * faceScale
-
-        return projectedX in -PROJECTION_MARGIN..(1f + PROJECTION_MARGIN) &&
-            projectedY in -PROJECTION_MARGIN..(1f + PROJECTION_MARGIN)
+        return true
     }
 
     private fun recordAndEmit(result: VisionResult) {
@@ -338,11 +321,11 @@ class CameraVisionEngine(
          * main thread and CameraX drops stale frames before they reach the model.
          */
         return FaceDetectorOptions.Builder()
-            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
             .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-            .setMinFaceSize(0.08f)
+            .setMinFaceSize(0.04f)
             .enableTracking()
             .build()
     }
@@ -350,8 +333,8 @@ class CameraVisionEngine(
     companion object {
         private const val TAG = "CameraVisionEngine"
         private const val MAX_RECENT_RESULTS = 32
-        private const val MIN_SECONDARY_FACE_AREA_RATIO = 0.0125f
-        private const val PROJECTION_MARGIN = 0.08f
-        private val ATTENTION_CONE_COSINE = cos(Math.toRadians(45.0))
+        private const val MIN_SECONDARY_FACE_AREA_RATIO = 0.004f
+        private const val MIN_ATTENTION_YAW = 30f
+        private const val MAX_ATTENTION_YAW = 90f
     }
 }
