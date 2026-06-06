@@ -277,7 +277,7 @@ fun SettingsDashboard(
                             )
                         },
                         valueRange = ACTIVE_INTERVAL_MIN_MS.toFloat()..ACTIVE_INTERVAL_MAX_MS.toFloat(),
-                        steps = 26,
+                        steps = 28,
                         startLabel = "Faster",
                         endLabel = "Lower battery"
                     )
@@ -295,7 +295,7 @@ fun SettingsDashboard(
                             )
                         },
                         valueRange = QUIET_INTERVAL_MIN_MS.toFloat()..QUIET_INTERVAL_MAX_MS.toFloat(),
-                        steps = 21,
+                        steps = 23,
                         startLabel = "Faster",
                         endLabel = "Lower battery"
                     )
@@ -425,9 +425,9 @@ private fun pauseLabel(pauseMs: Long): String {
 
 private const val MOTION_THRESHOLD_MIN = 0.010f
 private const val MOTION_THRESHOLD_MAX = 0.080f
-private const val ACTIVE_INTERVAL_MIN_MS = 150L
+private const val ACTIVE_INTERVAL_MIN_MS = 50L
 private const val ACTIVE_INTERVAL_MAX_MS = 1_500L
-private const val QUIET_INTERVAL_MIN_MS = 300L
+private const val QUIET_INTERVAL_MIN_MS = 100L
 private const val QUIET_INTERVAL_MAX_MS = 2_500L
 private const val FAIL_SAFE_ATTENTION_DEGREES = 85f
 

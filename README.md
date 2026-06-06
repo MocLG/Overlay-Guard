@@ -86,13 +86,15 @@ Default sampling presets:
 
 | Preset | Active check | Quiet check | Static pause | Motion threshold |
 |---|---:|---:|---:|---:|
-| Aggressive | 150 ms | 300 ms | 5 min | 0.020 |
-| Balanced | 350 ms | 650 ms | 10 min | 0.035 |
-| Eco | 700 ms | 1200 ms | 15 min | 0.055 |
+| Aggressive | 100 ms | 200 ms | 5 min | 0.020 |
+| Balanced | 250 ms | 500 ms | 10 min | 0.035 |
+| Eco | 500 ms | 1000 ms | 15 min | 0.055 |
 | Custom | user controlled | user controlled | 10 min default | user controlled |
 
 The dashboard presents the variance threshold as a more intuitive Motion
 Response slider: higher response means the camera leaves quiet sampling sooner.
+Custom polling can be lowered to 50 ms active checks and 100 ms quiet checks for
+testing highly responsive behavior.
 
 ### Foreground Service
 
