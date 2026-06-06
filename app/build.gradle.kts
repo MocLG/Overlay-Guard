@@ -28,8 +28,8 @@ android {
         applicationId = "com.moclg.overlayguard"
         minSdk = 33
         targetSdk = 34
-        versionCode = 250
-        versionName = "2.5.0"
+        versionCode = 260
+        versionName = "2.6.0"
     }
 
     buildTypes {

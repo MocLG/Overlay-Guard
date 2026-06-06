@@ -10,7 +10,7 @@ and visual overlay implementation have been removed.
 | Key | Value |
 |---|---|
 | Package | `com.moclg.overlayguard` |
-| Version | `2.5.0` (`versionCode` 250) |
+| Version | `2.6.0` (`versionCode` 260) |
 | Compile / Target SDK | 34 |
 | Min SDK | 33 |
 | Language | Kotlin |
