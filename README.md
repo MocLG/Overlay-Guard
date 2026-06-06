@@ -10,6 +10,7 @@ and visual overlay implementation have been removed.
 | Key | Value |
 |---|---|
 | Package | `com.moclg.overlayguard` |
+| Version | `2.5.0` (`versionCode` 250) |
 | Compile / Target SDK | 34 |
 | Min SDK | 33 |
 | Language | Kotlin |
@@ -37,42 +38,61 @@ setting operations are routed through the selected backend.
 
 - **Surface Brightness Off (-1)**: saves the current brightness state, switches
   to manual brightness, and calls hidden `SurfaceControl.setDisplayBrightness()`
-  with `-1f` to turn the backlight off without putting Android to sleep.
-- **Surface Power Off**: calls hidden `SurfaceControl.setDisplayPowerMode()` with
-  `POWER_MODE_OFF` and restores with `POWER_MODE_NORMAL`. This mirrors the
-  no-keyguard approach used by Extinguish-style display control instead of
-  `IPowerManager.goToSleep()`, which can trigger normal lock-screen policy.
+  with `-1f` to turn the backlight off without putting Android to sleep. The
+  command is retried and falls back to system brightness settings if the panel
+  or ROM clamps the hidden API request.
+- **Surface Power Off**: pre-blacks the panel with hidden
+  `SurfaceControl.setDisplayBrightness(-1f)`, then calls
+  `SurfaceControl.setDisplayPowerMode(POWER_MODE_OFF)` and restores with
+  `POWER_MODE_NORMAL`. This mirrors the no-keyguard approach used by
+  Extinguish-style display control instead of `IPowerManager.goToSleep()`,
+  which can trigger normal lock-screen policy.
 
 The privileged command entry point is `core/SurfaceControlCommand.java`. It is
 executed with the app APK on `CLASSPATH` through Root or Shizuku, then reflects
-into hidden framework display APIs from that privileged process.
+into hidden framework display APIs from that privileged process. The helper
+supports both the two-argument and newer five-argument hidden
+`setDisplayBrightness()` signatures and checks for null display tokens.
+`DisplayController` also holds a partial wake lock while blanked so the camera
+and analyzer continue running while the physical display is off.
 
 ### Vision Engine
 
 `engine/CameraVisionEngine.kt` binds a front-camera CameraX `ImageAnalysis`
 pipeline with `STRATEGY_KEEP_ONLY_LATEST` on a dedicated analyzer executor. ML
 Kit Face Detection counts detected faces and treats the largest face as the
-primary user. Extra faces are evaluated with Euler yaw/pitch plus bounding-box
-projection checks, so side glances beyond the configured yaw limit are ignored.
+primary user. Extra faces are evaluated with a small bounding-box area gate and
+Euler yaw filtering, so tiny detections and clear side glances can be ignored.
+The UI angle control defaults to fail-safe behavior: values at or above the
+fail-safe range treat any detected secondary face as an intruder. Positive
+intruder detections are held for 2.5 seconds to prevent one missed ML frame from
+immediately restoring the display.
 
 ML Kit face detection is on-device, but the public ML Kit API does not expose an
 NNAPI/GPU delegate switch for this detector. Overlay Guard keeps inference off
-the main thread and drops stale frames before they reach the model.
+the main thread, analyzes a 960x720 front-camera stream, and drops stale frames
+before they reach the model.
 
 ### Adaptive Sampling
 
 `engine/SensorPollingManager.kt` listens to `Sensor.TYPE_ACCELEROMETER`, applies
 low-pass filtering, and derives a G-force flux variance window. Dynamic motion
 uses responsive sampling; static periods switch to quiet sampling and only pause
-camera analysis after a long idle period.
+camera analysis after a long idle period. The Smart Polling UI exposes
+Aggressive, Balanced, Eco, and Custom profiles. Moving any polling slider
+automatically switches the stored profile to Custom.
 
 Default sampling presets:
 
-| Preset | Dynamic | Static | Static pause |
-|---|---:|---:|---:|
-| Aggressive | 250 ms | 500 ms | 5 min |
-| Balanced | 500 ms | 1000 ms | 10 min |
-| Eco | 1000 ms | 2000 ms | 15 min |
+| Preset | Active check | Quiet check | Static pause | Motion threshold |
+|---|---:|---:|---:|---:|
+| Aggressive | 150 ms | 300 ms | 5 min | 0.020 |
+| Balanced | 350 ms | 650 ms | 10 min | 0.035 |
+| Eco | 700 ms | 1200 ms | 15 min | 0.055 |
+| Custom | user controlled | user controlled | 10 min default | user controlled |
+
+The dashboard presents the variance threshold as a more intuitive Motion
+Response slider: higher response means the camera leaves quiet sampling sooner.
 
 ### Foreground Service
 
@@ -114,8 +134,9 @@ Recommended first pass:
 2. Open Overlay Guard and grant Camera permission.
 3. Select **Root** execution mode.
 4. Select **Surface Power Off**.
-5. Start monitoring and grant the root prompt.
-6. Test with one face, then introduce a second face looking at the display.
+5. Set **Secondary face angle** near the fail-safe end for reliability testing.
+6. Start monitoring and grant the root prompt.
+7. Test with one face, then introduce a second face looking at the display.
 
 If Surface Power Off still locks the device on a specific ROM, test **Surface
 Brightness Off (-1)** and capture logcat around the trigger.
