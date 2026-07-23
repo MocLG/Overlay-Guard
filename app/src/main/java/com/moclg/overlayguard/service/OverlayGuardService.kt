@@ -42,6 +42,7 @@ import com.moclg.overlayguard.engine.DisplayController
 import com.moclg.overlayguard.engine.SensorPollingManager
 import com.moclg.overlayguard.engine.VisionDecision
 import com.moclg.overlayguard.engine.VisionResult
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,7 +52,21 @@ import kotlinx.coroutines.runBlocking
 
 class OverlayGuardService : LifecycleService() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /*
+     * handleVisionResult launches into this scope on every frame that yields a decision.
+     * A SupervisorJob stops siblings from being cancelled, but it does NOT stop an
+     * uncaught throwable in a root coroutine from reaching the thread's default uncaught
+     * exception handler, which terminates the process. Without the handler below, any
+     * failure inside blank()/restore() surfaced to the user as "the app crashes when it
+     * detects a face".
+     */
+    private val serviceExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Unhandled failure in guard coroutine", throwable)
+    }
+
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate + serviceExceptionHandler
+    )
 
     private var config: GuardConfig? = null
     private var executionHandler: IExecutionHandler? = null

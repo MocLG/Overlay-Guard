@@ -21,13 +21,15 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.lang.reflect.Method
 
 class ShizukuHandler(
     private val packageName: String,
@@ -35,6 +37,8 @@ class ShizukuHandler(
 ) : IExecutionHandler {
 
     override val mode: ExecutionMode = ExecutionMode.SHIZUKU
+
+    private val shellMutex = Mutex()
 
     override suspend fun connect(): ExecutionResult {
         return withContext(Dispatchers.IO) {
@@ -47,8 +51,10 @@ class ShizukuHandler(
                 }
                 val uid = runCatching { Shizuku.getUid() }.getOrDefault(-1)
                 ExecutionResult.ok("Shizuku connected as uid $uid")
-            } catch (e: Exception) {
-                ExecutionResult.failure("Shizuku connection failed", throwable = e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                ExecutionResult.failure("Shizuku connection failed", throwable = t)
             }
         }
     }
@@ -57,40 +63,83 @@ class ShizukuHandler(
         return try {
             Shizuku.pingBinder() &&
                 Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             false
         }
     }
 
     override suspend fun executeShellCommand(command: String): ExecutionResult {
         return withContext(Dispatchers.IO) {
-            try {
-                if (!isAvailable()) {
-                    return@withContext ExecutionResult.failure("Shizuku is unavailable")
+            shellMutex.withLock {
+                var process: Process? = null
+                try {
+                    if (!isAvailable()) {
+                        return@withLock ExecutionResult.failure("Shizuku is unavailable")
+                    }
+                    val started = newShizukuProcess(arrayOf("sh", "-c", command))
+                        ?: return@withLock ExecutionResult.failure(
+                            "Shizuku shell process API is unavailable"
+                        )
+                    process = started
+                    drainProcess(started)
+                } catch (e: CancellationException) {
+                    runCatching { process?.destroy() }
+                    throw e
+                } catch (t: Throwable) {
+                    /*
+                     * Deliberately Throwable rather than Exception. Reflection against a
+                     * Shizuku API that has been shrunk by R8, or removed upstream, surfaces
+                     * as NoSuchMethodError / NoClassDefFoundError, which are Errors. Those
+                     * previously escaped this handler and killed the process.
+                     */
+                    runCatching { process?.destroy() }
+                    Log.e(TAG, "Shizuku shell command failed: $command", t)
+                    ExecutionResult.failure("Shizuku shell command failed", throwable = t)
                 }
-                val process = newShizukuProcess(arrayOf("sh", "-c", command))
-                    ?: return@withContext ExecutionResult.failure(
-                        "Shizuku shell process API is unavailable"
-                    )
-                val stdout = BufferedReader(InputStreamReader(process.inputStream)).use {
-                    it.readText()
-                }
-                val stderr = BufferedReader(InputStreamReader(process.errorStream)).use {
-                    it.readText()
-                }
-                val exitCode = process.waitFor()
-                val output = listOf(stdout.trimEnd(), stderr.trimEnd())
-                    .filter { it.isNotBlank() }
-                    .joinToString(separator = "\n")
-                if (exitCode == 0) {
-                    ExecutionResult.ok("Shizuku shell command completed", output, exitCode)
-                } else {
-                    ExecutionResult.failure("Shizuku shell command failed", output, exitCode)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Shizuku shell command crashed: $command", e)
-                ExecutionResult.failure("Shizuku shell command crashed", throwable = e)
             }
+        }
+    }
+
+    /**
+     * Reads stdout on the calling thread while a helper thread drains stderr.
+     *
+     * Shizuku documents that the streams of a remote process must be consumed from
+     * different threads. Reading stdout to EOF first and only then reading stderr
+     * deadlocks as soon as the remote process fills the stderr pipe buffer, which
+     * SurfaceControlCommand does whenever it prints a stack trace before exiting.
+     * RootHandler never hit this because it merges stderr into stdout.
+     */
+    private fun drainProcess(process: Process): ExecutionResult {
+        val stderrBuffer = StringBuilder()
+        val stderrThread = Thread({
+            runCatching {
+                process.errorStream.bufferedReader().use { reader ->
+                    val text = reader.readText()
+                    synchronized(stderrBuffer) { stderrBuffer.append(text) }
+                }
+            }
+        }, "OverlayGuardShizukuErr").apply {
+            isDaemon = true
+            start()
+        }
+
+        val stdout = runCatching {
+            process.inputStream.bufferedReader().use { it.readText() }
+        }.getOrDefault("")
+
+        val exitCode = process.waitFor()
+        stderrThread.join(STREAM_DRAIN_JOIN_MS)
+        val stderr = synchronized(stderrBuffer) { stderrBuffer.toString() }
+
+        val output = listOf(stdout.trimEnd(), stderr.trimEnd())
+            .filter { it.isNotBlank() }
+            .joinToString(separator = "\n")
+            .take(MAX_CAPTURED_OUTPUT)
+
+        return if (exitCode == 0) {
+            ExecutionResult.ok("Shizuku shell command completed", output, exitCode)
+        } else {
+            ExecutionResult.failure("Shizuku shell command failed", output, exitCode)
         }
     }
 
@@ -151,11 +200,13 @@ class ShizukuHandler(
                 }
                 reply.readException()
                 ExecutionResult.ok("Power binder transaction $transactionCode completed")
-            } catch (e: Exception) {
-                Log.e(TAG, "Power binder transaction failed: $transactionCode", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.e(TAG, "Power binder transaction failed: $transactionCode", t)
                 ExecutionResult.failure(
                     "Power binder transaction failed",
-                    throwable = e
+                    throwable = t
                 )
             } finally {
                 reply.recycle()
@@ -165,19 +216,17 @@ class ShizukuHandler(
     }
 
     private fun powerBinder(): IBinder? {
-        val raw = SystemServiceHelper.getSystemService("power") ?: return null
-        return ShizukuBinderWrapper(raw)
+        return try {
+            val raw = SystemServiceHelper.getSystemService("power") ?: return null
+            ShizukuBinderWrapper(raw)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Unable to obtain the power binder via Shizuku", t)
+            null
+        }
     }
 
     private fun newShizukuProcess(command: Array<String>): Process? {
-        val method = Shizuku::class.java.methods.firstOrNull { method ->
-            method.name == "newProcess" &&
-                method.parameterTypes.size == 3 &&
-                method.parameterTypes[0].isArray &&
-                method.parameterTypes[1].isArray &&
-                method.parameterTypes[2] == String::class.java
-        } ?: return null
-        @Suppress("UNCHECKED_CAST")
+        val method = resolveNewProcessMethod() ?: return null
         return method.invoke(null, command, null, null) as? Process
     }
 
@@ -220,11 +269,59 @@ class ShizukuHandler(
 
     companion object {
         private const val TAG = "ShizukuHandler"
+        private const val STREAM_DRAIN_JOIN_MS = 2_000L
+        private const val MAX_CAPTURED_OUTPUT = 8 * 1024
+
+        @Volatile
+        private var newProcessMethod: Method? = null
+
+        @Volatile
+        private var newProcessResolved = false
+
+        /**
+         * Resolves [Shizuku.newProcess].
+         *
+         * The previous implementation scanned `Shizuku::class.java.methods`, which only
+         * exposes *public* members. `newProcess` is declared `private static`, so the scan
+         * never matched and every shell command under Shizuku returned
+         * "Shizuku shell process API is unavailable" — the whole execution path was dead.
+         * `getDeclaredMethod` plus `setAccessible` reaches it. Shizuku is bundled into this
+         * APK, so no hidden-API policy applies here.
+         *
+         * `newProcess` is deprecated upstream and is scheduled for removal in Shizuku API
+         * 14, hence the null return and the Error-tolerant callers: when it disappears the
+         * app degrades to a logged failure instead of terminating.
+         */
+        private fun resolveNewProcessMethod(): Method? {
+            newProcessMethod?.let { return it }
+            if (newProcessResolved) return null
+            return synchronized(this) {
+                val cached = newProcessMethod
+                if (cached != null || newProcessResolved) {
+                    cached
+                } else {
+                    val resolved = try {
+                        Shizuku::class.java.getDeclaredMethod(
+                            "newProcess",
+                            Array<String>::class.java,
+                            Array<String>::class.java,
+                            String::class.java
+                        ).apply { isAccessible = true }
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Shizuku.newProcess is unavailable in this Shizuku API", t)
+                        null
+                    }
+                    newProcessMethod = resolved
+                    newProcessResolved = true
+                    resolved
+                }
+            }
+        }
 
         fun isBinderReady(): Boolean {
             return try {
                 Shizuku.pingBinder()
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 false
             }
         }
@@ -233,7 +330,7 @@ class ShizukuHandler(
             return try {
                 Shizuku.pingBinder() &&
                     Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 false
             }
         }
